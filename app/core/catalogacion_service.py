@@ -53,6 +53,8 @@ def run_catalogacion_masiva(db: Session, empresa_id: int):
     hilo.start()
     return task_id
 
+from app.core.file_utils import check_path_exists, list_ortofotos, get_gdal_path
+
 def _run_catalogacion_masiva(task_id: str, db_url: str, empresa_id: int):
     PROGRESS_STORE[task_id] = {"progress": 5, "status": "Iniciando escaneo de carpeta..."}
     
@@ -62,13 +64,13 @@ def _run_catalogacion_masiva(task_id: str, db_url: str, empresa_id: int):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
     
-    if not os.path.exists(DIR_ORTOFOTOS):
-        PROGRESS_STORE[task_id] = {"progress": 100, "status": f"Error: La ruta no existe {DIR_ORTOFOTOS}", "error": True}
-        log_audit(db, "ERROR", "CATALOGACION_MASIVA_FALLO", f"La ruta de ortofotos no existe: {DIR_ORTOFOTOS}")
+    if not check_path_exists(DIR_ORTOFOTOS):
+        PROGRESS_STORE[task_id] = {"progress": 100, "status": f"Error: La ruta no existe o es inaccesible {DIR_ORTOFOTOS}", "error": True}
+        log_audit(db, "ERROR", "CATALOGACION_MASIVA_FALLO", f"La ruta de ortofotos no existe o es inaccesible: {DIR_ORTOFOTOS}")
         db.close()
         return
         
-    archivos = [f for f in os.listdir(DIR_ORTOFOTOS) if f.lower().endswith(('.tif', '.tiff', '.ecw', '.jp2'))]
+    archivos = list_ortofotos(DIR_ORTOFOTOS)
     
     if not archivos:
         PROGRESS_STORE[task_id] = {"progress": 100, "status": "Error: No hay archivos ráster para procesar.", "error": True}
@@ -79,7 +81,7 @@ def _run_catalogacion_masiva(task_id: str, db_url: str, empresa_id: int):
     PROGRESS_STORE[task_id] = {"progress": 15, "status": f"Generando Mosaico Virtual (VRT) para {len(archivos)} ortofotos..."}
     log_audit(db, "INFO", "CATALOGACION_MASIVA_INICIO", f"Iniciando catalogación masiva de {len(archivos)} ortofotos.")
     
-    rutas_completas = [os.path.join(DIR_ORTOFOTOS, f) for f in archivos]
+    rutas_completas = [get_gdal_path(DIR_ORTOFOTOS, f) for f in archivos]
     try:
         gdal.UseExceptions()
         vrt_ds = gdal.BuildVRT(VRT_FILE, rutas_completas)

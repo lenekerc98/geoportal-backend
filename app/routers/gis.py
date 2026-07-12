@@ -23,7 +23,10 @@ from app.core.catalogacion_service import run_catalogacion_masiva
 from app.core.logger import log_audit
 import threading
 
-UPLOAD_TEMP_DIR = os.path.join(os.getenv("DIR_ORTOFOTOS_ORIGINALES", r"C:\LNCZ\proyecto-catastro-2026\Ortofotos"), "Temp")
+from app.core.file_utils import check_path_exists, get_gdal_path, is_s3_path
+
+base_orto_dir = os.getenv("DIR_ORTOFOTOS_ORIGINALES", r"C:\LNCZ\proyecto-catastro-2026\Ortofotos")
+UPLOAD_TEMP_DIR = os.path.join(os.getcwd(), "Temp") if is_s3_path(base_orto_dir) else os.path.join(base_orto_dir, "Temp")
 os.makedirs(UPLOAD_TEMP_DIR, exist_ok=True)
 
 router = APIRouter(prefix="/gis", tags=["GIS / Datos Espaciales"])
@@ -690,13 +693,16 @@ async def procesar_ortofoto(request: Request):
     
     # Construir ruta absoluta
     ruta_absoluta = nombre_archivo
-    if not os.path.isabs(nombre_archivo):
+    if not os.path.isabs(nombre_archivo) and not is_s3_path(nombre_archivo):
         base_dir = os.getenv("DIR_ORTOFOTOS_ORIGINALES")
         if not base_dir:
             raise HTTPException(status_code=500, detail="DIR_ORTOFOTOS_ORIGINALES no está configurado en .env")
-        ruta_absoluta = os.path.join(base_dir, nombre_archivo)
+        ruta_absoluta = get_gdal_path(base_dir, nombre_archivo)
     
-    if not os.path.exists(ruta_absoluta):
+    # Check if the path exists (either local or via boto3 for S3)
+    # Note: If it's a /vsis3/ path, we can't use check_path_exists easily unless we parse it.
+    # We will just assume it's valid, GDAL will fail later if it's not.
+    if not is_s3_path(base_dir) and not os.path.exists(ruta_absoluta) and not ruta_absoluta.startswith("/vsis3/"):
         raise HTTPException(status_code=404, detail=f"El archivo no existe en el servidor: {ruta_absoluta}")
         
     # Generar un ID único para rastrear esta tarea

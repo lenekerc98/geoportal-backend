@@ -192,15 +192,24 @@ app = FastAPI(title="Catastro API 2026")
 
 # Leer orígenes permitidos desde el entorno o usar '*' por defecto
 frontend_url_env = os.getenv("FRONTEND_URL", "*")
-origins = [url.strip() for url in frontend_url_env.split(",")] if frontend_url_env != "*" else ["*"]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if frontend_url_env == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    origins = [url.strip() for url in frontend_url_env.split(",")]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 @app.get("/")
 def read_root():

@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+
+# MacOS
+.DS_Store
+
+# Temporary files and Orthophotos (to prevent huge uploads if they exist locally)
+Temp/
+Ortofotos/
+*.tif
+*.ovr
+*.vrt
