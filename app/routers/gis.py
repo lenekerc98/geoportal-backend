@@ -1090,7 +1090,7 @@ def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
             width=256,
             height=256,
             resampleAlg="nearest",
-            srcNodata="0",
+            srcNodata="0 0 0",
             dstAlpha=True
         )
         

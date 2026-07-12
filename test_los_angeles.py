@@ -23,8 +23,8 @@ def num2deg(xtile, ytile, zoom):
     lat_deg = math.degrees(lat_rad)
     return (lon_deg, lat_deg)
 
-minlon, maxlat = num2deg(x, y, z)
-maxlon, minlat = num2deg(x + 1, y + 1, z)
+minlon, minlat = num2deg(x, y + 1, z)
+maxlon, maxlat = num2deg(x + 1, y, z)
 
 print(f"BBox requested: minlon={minlon}, minlat={minlat}, maxlon={maxlon}, maxlat={maxlat}")
 print(f"Opening {source_file}...")
