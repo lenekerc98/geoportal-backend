@@ -103,11 +103,14 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
         
         try:
             print("[GIS Service] Creando VRT individual local temporal...")
-            gdal.BuildVRT(vrt_local, [ruta_archivo])
+            ds_vrt = gdal.BuildVRT(vrt_local, [ruta_archivo])
+            ds_vrt = None # IMPORTANT: Close the VRT dataset before trying to update it!
             
             print("[GIS Service] Construyendo pirámides OVR...")
             ds_individual = gdal.Open(vrt_local, gdal.GA_Update)
             if ds_individual:
+                # Reduce RAM usage during overviews
+                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'JPEG')
                 ds_individual.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64], callback=gdal_progress_callback, callback_data=task_id)
                 ds_individual = None
             else:

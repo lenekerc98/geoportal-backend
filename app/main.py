@@ -16,7 +16,7 @@ if proj_lib:
     gdal.SetConfigOption('PROJ_LIB', proj_lib)
 
 # Optimizaciones de rendimiento extremo para GDAL
-gdal.SetConfigOption('GDAL_CACHEMAX', '2048') # 2GB de RAM para GDAL
+gdal.SetConfigOption('GDAL_CACHEMAX', '256') # Reducido a 256MB para evitar OOM Killer en Render
 gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN', 'EMPTY_DIR')
 gdal.SetConfigOption('VSI_CACHE', 'TRUE')
 with engine.connect() as connection:
