@@ -1088,9 +1088,7 @@ def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
         height=256,
         resampleAlg="nearest",
         srcNodata="0",
-        dstAlpha=True,
-        warpOptions=["NUM_THREADS=ALL_CPUS"],
-        multithread=True
+        dstAlpha=True
     )
     
     ds = gdal.Warp("", source_file, options=warp_opts)
