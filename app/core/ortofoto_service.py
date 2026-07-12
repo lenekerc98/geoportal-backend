@@ -70,9 +70,12 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
     """
     from app.core.file_utils import is_s3_path, get_s3_bucket_and_prefix
     import boto3
+    import subprocess
+    
+    storage_mode = os.getenv("STORAGE_MODE", "s3").lower()
     
     PROGRESS_STORE[task_id] = 1.0
-    print(f"[GIS Service] Iniciando procesamiento NUBE: {ruta_archivo}")
+    print(f"[GIS Service] Iniciando procesamiento [{storage_mode.upper()}]: {ruta_archivo}")
     
     nombre_archivo = os.path.basename(ruta_archivo)
     tipo_archivo = nombre_archivo.split('.')[-1].lower() if '.' in nombre_archivo else 'desconocido'
@@ -90,65 +93,80 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
     q_check = text("SELECT id FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :nombre")
     ya_existe = db.execute(q_check, {"nombre": nombre_archivo}).fetchone() is not None
     
-    # 2. Construir VRT individual temporal y generarle pirámides
+    # 2. Construir Pirámides
     if tipo_archivo in ['tif', 'tiff', 'ecw', 'jp2'] and not ya_existe:
         PROGRESS_STORE[task_id] = 10.0
         
-        temp_dir = "/tmp/ortofotos_processing"
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        nombre_base = os.path.splitext(nombre_archivo)[0]
-        vrt_local = os.path.join(temp_dir, f"{nombre_base}.vrt")
-        ovr_local = vrt_local + ".ovr"
-        
         try:
-            print("[GIS Service] Creando VRT individual local temporal...")
-            ds_vrt = gdal.BuildVRT(vrt_local, [ruta_archivo])
-            ds_vrt = None # IMPORTANT: Close the VRT dataset before trying to update it!
-            
-            print("[GIS Service] Construyendo pirámides OVR con gdaladdo (subproceso)...")
-            PROGRESS_STORE[task_id] = 30.0
-            
-            import subprocess
-            cmd = [
-                "gdaladdo",
-                "-r", "average",
-                "--config", "COMPRESS_OVERVIEW", "JPEG",
-                "--config", "GDAL_CACHEMAX", "256",
-                vrt_local,
-                "2", "4", "8", "16", "32", "64"
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[GIS Service] Error en gdaladdo: {result.stderr}")
-                PROGRESS_STORE[task_id] = -1
-                return
+            if storage_mode == "local":
+                print("[GIS Service] MODO LOCAL: Construyendo pirámides OVR directamente en el archivo original...")
+                cmd = [
+                    "gdaladdo", "-r", "average", "--config", "COMPRESS_OVERVIEW", "JPEG",
+                    ruta_archivo, "2", "4", "8", "16", "32", "64"
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[GIS Service] Error en gdaladdo local: {result.stderr}")
+                    PROGRESS_STORE[task_id] = -1
+                    return
+                print("[GIS Service] Pirámides locales creadas exitosamente.")
+                PROGRESS_STORE[task_id] = 70.0
+                
             else:
-                print(f"[GIS Service] gdaladdo exitoso.")
+                # MODO S3
+                temp_dir = "/tmp/ortofotos_processing"
+                os.makedirs(temp_dir, exist_ok=True)
                 
-            PROGRESS_STORE[task_id] = 70.0
-            
-            # Subir VRT y OVR generados a S3
-            comp_s3_url = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
-            if comp_s3_url and is_s3_path(comp_s3_url):
-                print(f"[GIS Service] Subiendo VRT y OVR a S3: {comp_s3_url}")
-                s3 = boto3.client('s3')
-                bucket, prefix = get_s3_bucket_and_prefix(comp_s3_url)
+                nombre_base = os.path.splitext(nombre_archivo)[0]
+                vrt_local = os.path.join(temp_dir, f"{nombre_base}.vrt")
+                ovr_local = vrt_local + ".ovr"
                 
-                vrt_key = f"{prefix}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
-                s3.upload_file(vrt_local, bucket, vrt_key)
+                print("[GIS Service] MODO S3: Creando VRT individual local temporal...")
+                ds_vrt = gdal.BuildVRT(vrt_local, [ruta_archivo])
+                ds_vrt = None # IMPORTANT: Close the VRT dataset before trying to update it!
                 
-                if os.path.exists(ovr_local):
-                    ovr_key = f"{prefix}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
-                    s3.upload_file(ovr_local, bucket, ovr_key)
-            
-            # Limpieza local
-            if os.path.exists(vrt_local): os.remove(vrt_local)
-            if os.path.exists(ovr_local): os.remove(ovr_local)
+                print("[GIS Service] Construyendo pirámides OVR con gdaladdo (subproceso)...")
+                PROGRESS_STORE[task_id] = 30.0
+                
+                cmd = [
+                    "gdaladdo",
+                    "-r", "average",
+                    "--config", "COMPRESS_OVERVIEW", "JPEG",
+                    "--config", "GDAL_CACHEMAX", "256",
+                    vrt_local,
+                    "2", "4", "8", "16", "32", "64"
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[GIS Service] Error en gdaladdo: {result.stderr}")
+                    PROGRESS_STORE[task_id] = -1
+                    return
+                else:
+                    print(f"[GIS Service] gdaladdo exitoso.")
+                    
+                PROGRESS_STORE[task_id] = 70.0
+                
+                # Subir VRT y OVR generados a S3
+                comp_s3_url = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
+                if comp_s3_url and is_s3_path(comp_s3_url):
+                    print(f"[GIS Service] Subiendo VRT y OVR a S3: {comp_s3_url}")
+                    s3 = boto3.client('s3')
+                    bucket, prefix = get_s3_bucket_and_prefix(comp_s3_url)
+                    
+                    vrt_key = f"{prefix}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
+                    s3.upload_file(vrt_local, bucket, vrt_key)
+                    
+                    if os.path.exists(ovr_local):
+                        ovr_key = f"{prefix}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
+                        s3.upload_file(ovr_local, bucket, ovr_key)
+                
+                # Limpieza local
+                if os.path.exists(vrt_local): os.remove(vrt_local)
+                if os.path.exists(ovr_local): os.remove(ovr_local)
                 
         except Exception as e:
-            print(f"[GIS Service] Error al generar Pirámides en la nube: {e}")
+            print(f"[GIS Service] Error al generar Pirámides: {e}")
             PROGRESS_STORE[task_id] = -1
             return
     elif ya_existe:
@@ -161,8 +179,11 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
     print("[GIS Service] Guardando/Actualizando catálogo en PostgreSQL...")
     try:
         base_orig = os.getenv("DIR_ORTOFOTOS_ORIGINALES")
-        s3_ruta_completa = f"{base_orig}/{nombre_archivo}" if base_orig else ruta_archivo
-        
+        # En modo local, guardamos la ruta original. En modo s3, agregamos el bucket
+        ruta_completa_db = ruta_archivo
+        if storage_mode == "s3" and base_orig:
+            ruta_completa_db = f"{base_orig}/{nombre_archivo}"
+            
         q_upsert = text("""
             INSERT INTO catastro.ortofotos_catalogo (nombre_archivo, ruta_completa, srid_original, tipo_archivo, geom, id_provincia, id_canton, id_ciudad)
             VALUES (:nombre, :ruta, :srid, :tipo, ST_Transform(ST_GeomFromText(:wkt, :srid_lec), :srid_dest), :id_prov, :id_can, :id_ciu)
@@ -178,7 +199,7 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
         
         db.execute(q_upsert, {
             "nombre": nombre_archivo,
-            "ruta": s3_ruta_completa,
+            "ruta": ruta_completa_db,
             "srid": srid_orig,
             "tipo": tipo_archivo,
             "wkt": wkt_geom,

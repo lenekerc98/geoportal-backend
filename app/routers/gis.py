@@ -31,6 +31,33 @@ os.makedirs(UPLOAD_TEMP_DIR, exist_ok=True)
 
 router = APIRouter(prefix="/gis", tags=["GIS / Datos Espaciales"])
 
+@router.get("/seleccionar-archivo")
+def seleccionar_archivo():
+    """
+    Abre una ventana de diálogo nativa de Windows para seleccionar un archivo.
+    ATENCIÓN: Esto solo funciona si el backend corre localmente (modo 'local').
+    En la nube (Render/Linux) esto causaría un error o simplemente no funcionaría.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+    
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        file_path = filedialog.askopenfilename(
+            title="Selecciona la ortofoto (.tif, .ecw, .jp2)",
+            filetypes=[("Archivos Raster", "*.tif *.tiff *.ecw *.jp2"), ("Todos los archivos", "*.*")]
+        )
+        root.destroy()
+        
+        if not file_path:
+            raise HTTPException(status_code=400, detail="No se seleccionó ningún archivo")
+            
+        return {"ruta": file_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo abrir el selector: {str(e)}")
+
 from typing import Optional
 
 @router.get("/predios", response_model=schemas.GeoJSONFeatureCollection)
