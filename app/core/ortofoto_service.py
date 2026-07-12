@@ -106,15 +106,26 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
             ds_vrt = gdal.BuildVRT(vrt_local, [ruta_archivo])
             ds_vrt = None # IMPORTANT: Close the VRT dataset before trying to update it!
             
-            print("[GIS Service] Construyendo pirámides OVR...")
-            ds_individual = gdal.Open(vrt_local, gdal.GA_Update)
-            if ds_individual:
-                # Reduce RAM usage during overviews
-                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'JPEG')
-                ds_individual.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64], callback=gdal_progress_callback, callback_data=task_id)
-                ds_individual = None
+            print("[GIS Service] Construyendo pirámides OVR con gdaladdo (subproceso)...")
+            PROGRESS_STORE[task_id] = 30.0
+            
+            import subprocess
+            cmd = [
+                "gdaladdo",
+                "-r", "average",
+                "--config", "COMPRESS_OVERVIEW", "JPEG",
+                "--config", "GDAL_CACHEMAX", "256",
+                vrt_local,
+                "2", "4", "8", "16", "32", "64"
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"[GIS Service] Error en gdaladdo: {result.stderr}")
+                PROGRESS_STORE[task_id] = -1
+                return
             else:
-                print("[GIS Service] Advertencia: No se pudo abrir VRT local para pirámides.")
+                print(f"[GIS Service] gdaladdo exitoso.")
                 
             PROGRESS_STORE[task_id] = 70.0
             
