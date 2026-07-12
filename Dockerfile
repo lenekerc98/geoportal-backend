@@ -14,8 +14,11 @@ RUN apt-get update && apt-get install -y \
     gdal-bin \
     libgdal-dev \
     python3-gdal \
+    proj-data \
+    proj-bin \
     && rm -rf /var/lib/apt/lists/*
 
+ENV PROJ_LIB=/usr/share/proj
 # Copiar requirements e instalarlos
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
