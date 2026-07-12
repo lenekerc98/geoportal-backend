@@ -61,33 +61,24 @@ def obtener_datos_ortofoto(ruta_archivo: str):
 
 def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, dpa_data: dict = None):
     """
-    Procesa la ortofoto en segundo plano:
-    - Mueve la foto a Ortofotos/Complementos/YYYY/MM/
-    - Si ya existe en BD, omite las pirámides (Inteligencia de Archivo).
-    - Genera pirámides (.ovr) si es nueva.
-    - Reconstruye el VRT Maestro con TODAS las fotos de la base.
-    - Guarda/actualiza en PostgreSQL.
+    Procesa la ortofoto en segundo plano de forma nativa para la nube (S3):
+    - Lee la imagen desde S3 usando GDAL (/vsis3/...)
+    - Crea un VRT temporal local para construir las pirámides (OVR).
+    - Sube el VRT y OVR a S3 Complementos usando boto3.
+    - Limpia los archivos temporales locales.
+    - Guarda/actualiza la ruta S3 en PostgreSQL.
     """
-    PROGRESS_STORE[task_id] = 1.0
-    print(f"[GIS Service] Iniciando procesamiento: {ruta_archivo}")
+    from app.core.file_utils import is_s3_path, get_s3_bucket_and_prefix
+    import boto3
     
-    if not os.path.exists(ruta_archivo):
-        print(f"[GIS Service] Error: El archivo no existe: {ruta_archivo}")
-        PROGRESS_STORE[task_id] = -1
-        return
-        
+    PROGRESS_STORE[task_id] = 1.0
+    print(f"[GIS Service] Iniciando procesamiento NUBE: {ruta_archivo}")
+    
     nombre_archivo = os.path.basename(ruta_archivo)
     tipo_archivo = nombre_archivo.split('.')[-1].lower() if '.' in nombre_archivo else 'desconocido'
     
-    # 0. Mover el TIF original a Ortofotos/Ortofotos/ si no está ahí
-    nueva_ruta = os.path.join(ORTOFOTOS_DIR, nombre_archivo)
-    
-    if os.path.abspath(ruta_archivo) != os.path.abspath(nueva_ruta):
-        print(f"[GIS Service] Moviendo TIF a la carpeta de Ortofotos: {nueva_ruta}")
-        shutil.move(ruta_archivo, nueva_ruta)
-    
-    # 1. Obtener datos geográficos del TIF
-    wkt_geom, srid_orig = obtener_datos_ortofoto(nueva_ruta)
+    # 1. Obtener datos geográficos del TIF directamente desde S3
+    wkt_geom, srid_orig = obtener_datos_ortofoto(ruta_archivo)
     if not wkt_geom:
         print("[GIS Service] Error: No se pudo obtener la geometría.")
         PROGRESS_STORE[task_id] = -1
@@ -99,54 +90,65 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
     q_check = text("SELECT id FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :nombre")
     ya_existe = db.execute(q_check, {"nombre": nombre_archivo}).fetchone() is not None
     
-    # Ruta del VRT individual y su OVR en Complementos
-    nombre_base = os.path.splitext(nombre_archivo)[0]
-    vrt_individual = os.path.join(COMPLEMENTOS_DIR, f"{nombre_base}.vrt")
-    tiene_ovr = os.path.exists(vrt_individual + '.ovr')
-
-    # 2. Construir VRT individual en Complementos y generarle pirámides allí
-    if tipo_archivo in ['tif', 'tiff', 'ecw', 'jp2'] and (not ya_existe or not tiene_ovr):
+    # 2. Construir VRT individual temporal y generarle pirámides
+    if tipo_archivo in ['tif', 'tiff', 'ecw', 'jp2'] and not ya_existe:
         PROGRESS_STORE[task_id] = 10.0
+        
+        temp_dir = "/tmp/ortofotos_processing"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        nombre_base = os.path.splitext(nombre_archivo)[0]
+        vrt_local = os.path.join(temp_dir, f"{nombre_base}.vrt")
+        ovr_local = vrt_local + ".ovr"
+        
         try:
-            print("[GIS Service] Creando VRT individual en Complementos para aislar el OVR...")
-            gdal.BuildVRT(vrt_individual, [nueva_ruta])
+            print("[GIS Service] Creando VRT individual local temporal...")
+            gdal.BuildVRT(vrt_local, [ruta_archivo])
             
-            print("[GIS Service] Construyendo pirámides en Complementos...")
-            ds_individual = gdal.Open(vrt_individual, gdal.GA_Update)
+            print("[GIS Service] Construyendo pirámides OVR...")
+            ds_individual = gdal.Open(vrt_local, gdal.GA_Update)
             if ds_individual:
                 ds_individual.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64], callback=gdal_progress_callback, callback_data=task_id)
                 ds_individual = None
             else:
-                print("[GIS Service] Advertencia: No se pudo abrir VRT para pirámides.")
+                print("[GIS Service] Advertencia: No se pudo abrir VRT local para pirámides.")
+                
+            PROGRESS_STORE[task_id] = 70.0
+            
+            # Subir VRT y OVR generados a S3
+            comp_s3_url = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
+            if comp_s3_url and is_s3_path(comp_s3_url):
+                print(f"[GIS Service] Subiendo VRT y OVR a S3: {comp_s3_url}")
+                s3 = boto3.client('s3')
+                bucket, prefix = get_s3_bucket_and_prefix(comp_s3_url)
+                
+                vrt_key = f"{prefix}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
+                s3.upload_file(vrt_local, bucket, vrt_key)
+                
+                if os.path.exists(ovr_local):
+                    ovr_key = f"{prefix}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
+                    s3.upload_file(ovr_local, bucket, ovr_key)
+            
+            # Limpieza local
+            if os.path.exists(vrt_local): os.remove(vrt_local)
+            if os.path.exists(ovr_local): os.remove(ovr_local)
+                
         except Exception as e:
-            print(f"[GIS Service] Error al generar Pirámides: {e}")
+            print(f"[GIS Service] Error al generar Pirámides en la nube: {e}")
             PROGRESS_STORE[task_id] = -1
             return
-    elif ya_existe and tiene_ovr:
-        print("[GIS Service] La imagen ya fue procesada anteriormente y tiene pirámides. Se omite la recreación.")
+    elif ya_existe:
+        print("[GIS Service] La imagen ya fue procesada anteriormente. Se omite la recreación de pirámides.")
         PROGRESS_STORE[task_id] = 50.0
 
-    # 3. Reconstruir el VRT Maestro con TODAS las ortofotos (Mosaico)
-    if tipo_archivo in ['tif', 'tiff', 'ecw', 'jp2']:
-        print("[GIS Service] Actualizando el Mosaico VRT Maestro...")
-        try:
-            # Obtenemos todos los TIF del catálogo
-            fotos_db = db.execute(text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE tipo_archivo != 'vrt'")).fetchall()
-            rutas_tif = [f[0] for f in fotos_db if os.path.exists(f[0])]
-            if nueva_ruta not in rutas_tif:
-                rutas_tif.append(nueva_ruta)
-            
-            if rutas_tif:
-                gdal.BuildVRT(VRT_FILE, rutas_tif)
-                print("[GIS Service] VRT Maestro actualizado.")
-        except Exception as e:
-            print(f"[GIS Service] Error reconstruyendo VRT: {e}")
-            
     PROGRESS_STORE[task_id] = 85.0
             
-    # 4. Guardar en Base de Datos
+    # 3. Guardar en Base de Datos
     print("[GIS Service] Guardando/Actualizando catálogo en PostgreSQL...")
     try:
+        base_orig = os.getenv("DIR_ORTOFOTOS_ORIGINALES")
+        s3_ruta_completa = f"{base_orig}/{nombre_archivo}" if base_orig else ruta_archivo
+        
         q_upsert = text("""
             INSERT INTO catastro.ortofotos_catalogo (nombre_archivo, ruta_completa, srid_original, tipo_archivo, geom, id_provincia, id_canton, id_ciudad)
             VALUES (:nombre, :ruta, :srid, :tipo, ST_Transform(ST_GeomFromText(:wkt, :srid_lec), :srid_dest), :id_prov, :id_can, :id_ciu)
@@ -162,7 +164,7 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
         
         db.execute(q_upsert, {
             "nombre": nombre_archivo,
-            "ruta": nueva_ruta,
+            "ruta": s3_ruta_completa,
             "srid": srid_orig,
             "tipo": tipo_archivo,
             "wkt": wkt_geom,
@@ -172,26 +174,8 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
             "id_can": dpa_data.get("id_canton") if dpa_data else None,
             "id_ciu": dpa_data.get("id_ciudad") if dpa_data else None
         })
-        
-        # Registrar el VRT Maestro
-        if os.path.exists(VRT_FILE):
-            wkt_vrt, srid_vrt = obtener_datos_ortofoto(VRT_FILE)
-            if wkt_vrt:
-                db.execute(q_upsert, {
-                    "nombre": "ortofotos.vrt",
-                    "ruta": VRT_FILE,
-                    "srid": srid_vrt,
-                    "tipo": "vrt",
-                    "wkt": wkt_vrt,
-                    "srid_lec": srid_vrt or SRID_DESTINO,
-                    "srid_dest": SRID_DESTINO,
-                    "id_prov": None,
-                    "id_can": None,
-                    "id_ciu": None
-                })
-        
         db.commit()
-        PROGRESS_STORE[task_id] = 100.0 # Completado!
+        PROGRESS_STORE[task_id] = 100.0
         print(f"[GIS Service] PROCESO EXITOSO. La ortofoto '{nombre_archivo}' ya está en el catálogo.")
     except Exception as e:
         print(f"[GIS Service] Error en BD: {e}")

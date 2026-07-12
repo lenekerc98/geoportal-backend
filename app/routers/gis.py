@@ -737,46 +737,32 @@ def obtener_progreso(task_id: str):
         
     return {"progreso": progreso, "estado": estado}
 
-@router.get("/seleccionar-archivo")
-def seleccionar_archivo():
-    """
-    Abre una ventana nativa de Windows usando PowerShell para evadir 
-    la falta de librerías GUI (como tkinter o PyQt) en entornos embebidos.
-    """
-    def open_dialog():
-        ps_script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "$f = New-Object System.Windows.Forms.OpenFileDialog; "
-            "$f.Filter = 'Ortofotos (*.tif;*.tiff;*.ecw;*.jp2)|*.tif;*.tiff;*.ecw;*.jp2|Todos (*.*)|*.*'; "
-            "$f.Title = 'Seleccionar Ortofoto (Servidor)'; "
-            "$res = $f.ShowDialog(); "
-            "if ($res -eq 'OK') { Write-Output $f.FileName }"
-        )
-        
-        ps_exe = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        try:
-            result = subprocess.run(
-                [ps_exe, "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", ps_script],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                print(f"[GIS Service] Error en PowerShell: {result.stderr}")
-            return result.stdout.strip()
-        except FileNotFoundError:
-            # Fallback en caso de que la ruta absoluta falle, usar variable de entorno
-            result = subprocess.run(
-                ["powershell", "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", ps_script],
-                capture_output=True, text=True
-            )
-            return result.stdout.strip()
-        
+@router.get("/s3/list")
+def list_s3_files(db: Session = Depends(get_db)):
+    """Lista las ortofotos en S3 y marca cuáles están procesadas."""
     try:
-        path = open_dialog()
-        if not path:
-            print("[GIS Service] No se seleccionó ningún archivo o hubo un error.")
-        return {"ruta": path}
+        from app.core.file_utils import list_ortofotos
+        base_dir = os.getenv("DIR_ORTOFOTOS_ORIGINALES", "")
+        if not base_dir:
+            return {"files": []}
+            
+        archivos_s3 = list_ortofotos(base_dir)
+        
+        # Consultar cuáles ya existen en la base de datos
+        q = text("SELECT nombre_archivo FROM catastro.ortofotos_catalogo")
+        procesados_db = {row[0] for row in db.execute(q).fetchall()}
+        
+        resultados = []
+        for arch in archivos_s3:
+            resultados.append({
+                "filename": arch,
+                "procesado": arch in procesados_db
+            })
+            
+        return {"files": resultados}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error abriendo explorador: {str(e)}")
+        print("Error en /s3/list:", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upload")
 async def upload_file_drag_drop(
