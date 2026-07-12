@@ -1023,18 +1023,18 @@ def get_catalog(current_user: Usuario = Depends(get_current_user), db: Session =
             FROM catastro.ortofotos_catalogo
             WHERE nombre_archivo != 'ortofotos.vrt' AND (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         """)
-        rows = db.execute(query, {"empresa_id": current_user.id_empresa}).fetchall()
+        rows = db.execute(query, {"empresa_id": current_user.id_empresa}).mappings().fetchall()
         
         features = []
         for row in rows:
             feature = {
                 "type": "Feature",
                 "properties": {
-                    "id": row.id,
-                    "nombre_archivo": row.nombre_archivo,
-                    "ruta_completa": row.ruta_completa
+                    "id": row["id"],
+                    "nombre_archivo": row["nombre_archivo"],
+                    "ruta_completa": row["ruta_completa"]
                 },
-                "geometry": row.geometry
+                "geometry": row["geometry"]
             }
             features.append(feature)
             
