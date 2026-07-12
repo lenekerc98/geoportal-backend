@@ -1082,6 +1082,7 @@ def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
         format="MEM",
         outputBounds=[minx, miny, maxx, maxy],
         outputBoundsSRS="EPSG:4326",
+        srcSRS="EPSG:32717",
         dstSRS="EPSG:3857",
         width=256,
         height=256,
