@@ -757,6 +757,10 @@ def obtener_progreso(task_id: str):
         
     progreso = PROGRESS_STORE[task_id]
     estado = "procesando"
+    
+    if isinstance(progreso, str) and progreso.startswith("ERROR:"):
+        return {"progreso": -1, "estado": "error", "detalle": progreso}
+        
     if progreso == 100:
         estado = "completado"
     elif progreso < 0:

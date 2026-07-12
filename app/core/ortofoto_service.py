@@ -155,7 +155,8 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                 
                 # 1. Descargar TIF localmente
                 bucket_orig, prefix_orig = get_s3_bucket_and_prefix(os.getenv("DIR_ORTOFOTOS_ORIGINALES"))
-                key_orig = f"{prefix_orig}/{nombre_archivo}" if prefix_orig else nombre_archivo
+                key_orig = f"{prefix_orig.rstrip('/')}/{nombre_archivo}" if prefix_orig else nombre_archivo
+                print(f"[GIS Service] Descargando {key_orig} de {bucket_orig}...")
                 s3.download_file(bucket_orig, key_orig, local_tif)
                 PROGRESS_STORE[task_id] = 25.0
                 
@@ -195,11 +196,11 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                     print(f"[GIS Service] Subiendo VRT y OVR a S3: {comp_s3_url}")
                     bucket, prefix = get_s3_bucket_and_prefix(comp_s3_url)
                     
-                    vrt_key = f"{prefix}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
+                    vrt_key = f"{prefix.rstrip('/')}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
                     s3.upload_file(vrt_local, bucket, vrt_key)
                     
                     if os.path.exists(ovr_local):
-                        ovr_key = f"{prefix}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
+                        ovr_key = f"{prefix.rstrip('/')}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
                         s3.upload_file(ovr_local, bucket, ovr_key)
                 
                 # 6. Limpieza local
@@ -208,8 +209,11 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                 if os.path.exists(local_tif): os.remove(local_tif)
                 
         except Exception as e:
-            print(f"[GIS Service] Error al generar Pirámides: {e}")
-            PROGRESS_STORE[task_id] = -1
+            import traceback
+            err_msg = str(e)
+            print(f"[GIS Service] Error al generar Pirámides: {err_msg}")
+            traceback.print_exc()
+            PROGRESS_STORE[task_id] = f"ERROR: {err_msg}"
             return
     elif ya_existe:
         print("[GIS Service] La imagen ya fue procesada anteriormente. Se omite la recreación de pirámides.")
