@@ -139,45 +139,60 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                 PROGRESS_STORE[task_id] = 70.0
                 
             else:
-                # MODO S3
+                # MODO S3: Descarga temporal, procesamiento local, y subida (Previene OOM de GDAL)
+                print("[GIS Service] MODO S3: Descargando archivo desde S3 a disco local para procesamiento seguro...")
+                PROGRESS_STORE[task_id] = 15.0
+                
                 temp_dir = "/tmp/ortofotos_processing"
                 os.makedirs(temp_dir, exist_ok=True)
                 
                 nombre_base = os.path.splitext(nombre_archivo)[0]
+                local_tif = os.path.join(temp_dir, nombre_archivo)
                 vrt_local = os.path.join(temp_dir, f"{nombre_base}.vrt")
                 ovr_local = vrt_local + ".ovr"
                 
-                print("[GIS Service] MODO S3: Creando VRT individual local temporal...")
-                ds_vrt = gdal.BuildVRT(vrt_local, [ruta_archivo])
-                ds_vrt = None # IMPORTANT: Close the VRT dataset before trying to update it!
+                s3 = boto3.client('s3')
                 
-                print("[GIS Service] Construyendo pirámides OVR con gdaladdo (subproceso)...")
-                PROGRESS_STORE[task_id] = 30.0
+                # 1. Descargar TIF localmente
+                bucket_orig, prefix_orig = get_s3_bucket_and_prefix(os.getenv("DIR_ORTOFOTOS_ORIGINALES"))
+                key_orig = f"{prefix_orig}/{nombre_archivo}" if prefix_orig else nombre_archivo
+                s3.download_file(bucket_orig, key_orig, local_tif)
+                PROGRESS_STORE[task_id] = 25.0
                 
+                # 2. Crear VRT apuntando al TIF local
+                print("[GIS Service] Creando VRT apuntando al archivo temporal...")
+                ds_vrt = gdal.BuildVRT(vrt_local, [local_tif])
+                ds_vrt = None
+                
+                # 3. Construir pirámides OVR en el VRT local
+                print("[GIS Service] Construyendo pirámides OVR con gdaladdo (subproceso local)...")
                 cmd = [
-                    "gdaladdo",
-                    "-r", "average",
-                    "--config", "COMPRESS_OVERVIEW", "JPEG",
-                    "--config", "GDAL_CACHEMAX", "256",
-                    vrt_local,
-                    "2", "4", "8", "16", "32", "64"
+                    "gdaladdo", "-r", "average", "--config", "COMPRESS_OVERVIEW", "JPEG",
+                    "--config", "GDAL_CACHEMAX", "256", vrt_local, "2", "4", "8", "16", "32", "64"
                 ]
                 
-                returncode = run_gdaladdo_with_progress(cmd, task_id, 30.0, 70.0)
+                returncode = run_gdaladdo_with_progress(cmd, task_id, 25.0, 60.0)
                 if returncode != 0:
                     print(f"[GIS Service] Error en gdaladdo en modo nube.")
                     PROGRESS_STORE[task_id] = -1
                     return
-                else:
-                    print(f"[GIS Service] gdaladdo exitoso.")
-                    
-                PROGRESS_STORE[task_id] = 70.0
                 
-                # Subir VRT y OVR generados a S3
+                # 4. Modificar el VRT para que apunte a la ruta /vsis3/ original
+                print("[GIS Service] Reescribiendo rutas en el VRT para que apunten a S3...")
+                with open(vrt_local, 'r', encoding='utf-8') as f:
+                    vrt_content = f.read()
+                
+                vrt_content = vrt_content.replace(local_tif, ruta_archivo)
+                
+                with open(vrt_local, 'w', encoding='utf-8') as f:
+                    f.write(vrt_content)
+                    
+                PROGRESS_STORE[task_id] = 65.0
+                
+                # 5. Subir VRT y OVR generados a S3
                 comp_s3_url = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
                 if comp_s3_url and is_s3_path(comp_s3_url):
                     print(f"[GIS Service] Subiendo VRT y OVR a S3: {comp_s3_url}")
-                    s3 = boto3.client('s3')
                     bucket, prefix = get_s3_bucket_and_prefix(comp_s3_url)
                     
                     vrt_key = f"{prefix}/{nombre_base}.vrt" if prefix else f"{nombre_base}.vrt"
@@ -187,9 +202,10 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                         ovr_key = f"{prefix}/{nombre_base}.vrt.ovr" if prefix else f"{nombre_base}.vrt.ovr"
                         s3.upload_file(ovr_local, bucket, ovr_key)
                 
-                # Limpieza local
+                # 6. Limpieza local
                 if os.path.exists(vrt_local): os.remove(vrt_local)
                 if os.path.exists(ovr_local): os.remove(ovr_local)
+                if os.path.exists(local_tif): os.remove(local_tif)
                 
         except Exception as e:
             print(f"[GIS Service] Error al generar Pirámides: {e}")
