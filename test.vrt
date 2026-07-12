@@ -1,0 +1,48 @@
+<VRTDataset rasterXSize="29208" rasterYSize="13390">
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCS["WGS 84 / UTM zone 17S",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-81],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",10000000],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","32717"]]</SRS>
+  <GeoTransform>  6.7940820521829207e+05,  7.4105800000000624e-02,  0.0000000000000000e+00,  9.8426514772403128e+06,  0.0000000000000000e+00, -7.4105799999964431e-02</GeoTransform>
+  <VRTRasterBand dataType="Byte" band="1">
+    <ColorInterp>Red</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/vsis3/catastro-ortofotos/ortofotos/orto_los_angeles.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="29208" RasterYSize="13390" DataType="Byte" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <DstRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <UseMaskBand>true</UseMaskBand>
+    </ComplexSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="2">
+    <ColorInterp>Green</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/vsis3/catastro-ortofotos/ortofotos/orto_los_angeles.tif</SourceFilename>
+      <SourceBand>2</SourceBand>
+      <SourceProperties RasterXSize="29208" RasterYSize="13390" DataType="Byte" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <DstRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <UseMaskBand>true</UseMaskBand>
+    </ComplexSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="3">
+    <ColorInterp>Blue</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/vsis3/catastro-ortofotos/ortofotos/orto_los_angeles.tif</SourceFilename>
+      <SourceBand>3</SourceBand>
+      <SourceProperties RasterXSize="29208" RasterYSize="13390" DataType="Byte" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <DstRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <UseMaskBand>true</UseMaskBand>
+    </ComplexSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="4">
+    <ColorInterp>Alpha</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/vsis3/catastro-ortofotos/ortofotos/orto_los_angeles.tif</SourceFilename>
+      <SourceBand>4</SourceBand>
+      <SourceProperties RasterXSize="29208" RasterYSize="13390" DataType="Byte" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <DstRect xOff="0" yOff="0" xSize="29208" ySize="13390" />
+      <UseMaskBand>true</UseMaskBand>
+    </ComplexSource>
+  </VRTRasterBand>
+</VRTDataset>
