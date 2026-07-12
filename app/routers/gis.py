@@ -999,13 +999,17 @@ def get_vrt_path():
         result = db.execute(text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = 'ortofotos.vrt'")).fetchone()
         db.close()
         if result:
-            return result[0]
+            rc = result[0]
+            if rc.startswith("s3://"):
+                return get_gdal_path(rc)
+            elif os.path.exists(rc):
+                return rc
     except Exception as e:
         print("Error obteniendo VRT de la BD:", e)
         
     fallback = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
     if fallback:
-        return os.path.join(fallback, "ortofotos.vrt")
+        return get_gdal_path(fallback, "ortofotos.vrt")
     return None
 
 VRT_FILE = get_vrt_path()
@@ -1121,19 +1125,27 @@ def get_tile(z: int, x: int, y: int, filename: str = None, db: Session = Depends
             if filename in _TILE_SOURCE_CACHE:
                 source_file = _TILE_SOURCE_CACHE[filename]
             else:
-                q = text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :fname")
-                result = db.execute(q, {"fname": filename}).fetchone()
-                if result and os.path.exists(result[0]):
-                    source_file = result[0]
-                    # Intentar usar el VRT individual si existe (porque contiene las pirámides OVR)
-                    nombre_base = os.path.splitext(filename)[0]
-                    comp_dir = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
-                    if comp_dir:
-                        vrt_individual = os.path.join(comp_dir, f"{nombre_base}.vrt")
-                        if os.path.exists(vrt_individual):
-                            source_file = vrt_individual
+                base_orig = os.getenv("DIR_ORTOFOTOS_ORIGINALES")
+                comp_dir = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS")
                 
-                # Guardar en cache (aunque no exista, guardamos la por defecto o la que se resolvió)
+                # Check if VRT exists in complementos
+                nombre_base = os.path.splitext(filename)[0]
+                vrt_name = f"{nombre_base}.vrt"
+                
+                s3_vrt_path = f"{comp_dir}/{vrt_name}" if is_s3_path(comp_dir or "") else os.path.join(comp_dir or "", vrt_name)
+                
+                if comp_dir and check_path_exists(s3_vrt_path):
+                    source_file = get_gdal_path(comp_dir, vrt_name)
+                elif base_orig:
+                    source_file = get_gdal_path(base_orig, filename)
+                else:
+                    # Fallback to DB
+                    q = text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :fname")
+                    result = db.execute(q, {"fname": filename}).fetchone()
+                    if result:
+                        rc = result[0]
+                        source_file = get_gdal_path(rc) if is_s3_path(rc) else rc
+                
                 _TILE_SOURCE_CACHE[filename] = source_file
                     
         png_data = generate_tile_bytes(z, x, y, source_file)
