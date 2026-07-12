@@ -6,9 +6,14 @@ from app.core.database import engine, Base
 from app.routers import auth, users, gis, system, empresas
 from osgeo import gdal
 
-# Configuración crítica: PROJ_LIB para que GDAL pueda reproyectar de UTM a Web Mercator sin lanzar Error 500
-os.environ['PROJ_LIB'] = r"C:\Program Files\QGIS 4.0.2\share\proj"
-gdal.SetConfigOption('PROJ_LIB', r"C:\Program Files\QGIS 4.0.2\share\proj")
+import sys
+proj_lib = os.getenv('PROJ_LIB')
+if not proj_lib and sys.platform == "win32":
+    proj_lib = r"C:\Program Files\QGIS 4.0.2\share\proj"
+    os.environ['PROJ_LIB'] = proj_lib
+
+if proj_lib:
+    gdal.SetConfigOption('PROJ_LIB', proj_lib)
 
 # Optimizaciones de rendimiento extremo para GDAL
 gdal.SetConfigOption('GDAL_CACHEMAX', '2048') # 2GB de RAM para GDAL
