@@ -1073,59 +1073,62 @@ def num2deg(xtile, ytile, zoom):
     lat_deg = math.degrees(lat_rad)
     return lon_deg, lat_deg
 
+tile_semaphore = threading.Semaphore(2)
+
 @functools.lru_cache(maxsize=1024)
 def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
-    minx, miny = num2deg(x, y + 1, z)
-    maxx, maxy = num2deg(x + 1, y, z)
-    
-    warp_opts = gdal.WarpOptions(
-        format="MEM",
-        outputBounds=[minx, miny, maxx, maxy],
-        outputBoundsSRS="EPSG:4326",
-        srcSRS="EPSG:32717",
-        dstSRS="EPSG:3857",
-        width=256,
-        height=256,
-        resampleAlg="nearest",
-        srcNodata="0",
-        dstAlpha=True
-    )
-    
-    ds = gdal.Warp("", source_file, options=warp_opts)
-    if ds is None:
-        print(f"GDAL Warp failed for {source_file}: {gdal.GetLastErrorMsg()}")
-        return None
+    with tile_semaphore:
+        minx, miny = num2deg(x, y + 1, z)
+        maxx, maxy = num2deg(x + 1, y, z)
         
-    band_count = ds.RasterCount
-    band_list = None
-    if band_count > 4:
-        band_list = [1, 2, 3, band_count]  
-    elif band_count == 4:
-        band_list = [1, 2, 3, 4] 
-    elif band_count == 3:
-        band_list = [1, 2, 3] 
+        warp_opts = gdal.WarpOptions(
+            format="MEM",
+            outputBounds=[minx, miny, maxx, maxy],
+            outputBoundsSRS="EPSG:4326",
+            srcSRS="EPSG:32717",
+            dstSRS="EPSG:3857",
+            width=256,
+            height=256,
+            resampleAlg="nearest",
+            srcNodata="0",
+            dstAlpha=True
+        )
         
-    png_opts = gdal.TranslateOptions(format="PNG", bandList=band_list)
-    png_path = f"/vsimem/tile_{z}_{x}_{y}_{abs(hash(source_file))}.png"
-    png_ds = gdal.Translate(png_path, ds, options=png_opts)
-    if png_ds is None:
-        print(f"GDAL Translate failed: {gdal.GetLastErrorMsg()}")
-        return None
-    png_ds = None 
-    
-    f = gdal.VSIFOpenL(png_path, "rb")
-    if f is None: 
-        print(f"VSIFOpenL failed: {gdal.GetLastErrorMsg()}")
-        return None
-    gdal.VSIFSeekL(f, 0, 2)
-    size = gdal.VSIFTellL(f)
-    gdal.VSIFSeekL(f, 0, 0)
-    png_data = gdal.VSIFReadL(1, size, f)
-    gdal.VSIFCloseL(f)
-    gdal.Unlink(png_path)
-    ds = None
-    
-    return bytes(png_data)
+        ds = gdal.Warp("", source_file, options=warp_opts)
+        if ds is None:
+            print(f"GDAL Warp failed for {source_file}: {gdal.GetLastErrorMsg()}")
+            return None
+            
+        band_count = ds.RasterCount
+        band_list = None
+        if band_count > 4:
+            band_list = [1, 2, 3, band_count]  
+        elif band_count == 4:
+            band_list = [1, 2, 3, 4] 
+        elif band_count == 3:
+            band_list = [1, 2, 3] 
+            
+        png_opts = gdal.TranslateOptions(format="PNG", bandList=band_list)
+        png_path = f"/vsimem/tile_{z}_{x}_{y}_{abs(hash(source_file))}.png"
+        png_ds = gdal.Translate(png_path, ds, options=png_opts)
+        if png_ds is None:
+            print(f"GDAL Translate failed: {gdal.GetLastErrorMsg()}")
+            return None
+        png_ds = None 
+        
+        f = gdal.VSIFOpenL(png_path, "rb")
+        if f is None: 
+            print(f"VSIFOpenL failed: {gdal.GetLastErrorMsg()}")
+            return None
+        gdal.VSIFSeekL(f, 0, 2)
+        size = gdal.VSIFTellL(f)
+        gdal.VSIFSeekL(f, 0, 0)
+        png_data = gdal.VSIFReadL(1, size, f)
+        gdal.VSIFCloseL(f)
+        gdal.Unlink(png_path)
+        ds = None
+        
+        return bytes(png_data)
 
 # Cache en memoria para rutas de archivos y no saturar la base de datos por cada tile
 _TILE_SOURCE_CACHE = {}
