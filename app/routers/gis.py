@@ -992,18 +992,14 @@ async def iniciar_catalogacion_masiva(db: Session = Depends(get_db), current_use
 
 # --- TILE SERVER (Ortofotos) ---
 
-DB_URL = "postgresql://postgres:L3n3k3rx98.@127.0.0.1:5432/catastro_db"
-
 def get_vrt_path():
     try:
-        conn = psycopg2.connect(DB_URL)
-        cursor = conn.cursor()
-        cursor.execute("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = 'ortofotos.vrt'")
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if row:
-            return row[0]
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        result = db.execute(text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = 'ortofotos.vrt'")).fetchone()
+        db.close()
+        if result:
+            return result[0]
     except Exception as e:
         print("Error obteniendo VRT de la BD:", e)
         
@@ -1015,39 +1011,33 @@ def get_vrt_path():
 VRT_FILE = get_vrt_path()
 
 @router.get("/catalog")
-def get_catalog(current_user: Usuario = Depends(get_current_user)):
+def get_catalog(current_user: Usuario = Depends(get_current_user), db: Session = Depends(get_db)):
     """Devuelve los cuadros rojos del catálogo en formato GeoJSON para pintar en la web"""
     try:
-        conn = psycopg2.connect(DB_URL)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
+        query = text("""
             SELECT 
                 id, 
                 nombre_archivo, 
                 ruta_completa, 
                 ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry 
             FROM catastro.ortofotos_catalogo
-            WHERE nombre_archivo != 'ortofotos.vrt' AND (CAST(%s AS INTEGER) IS NULL OR empresa_id = %s)
-        """, (current_user.id_empresa, current_user.id_empresa))
-        rows = cursor.fetchall()
+            WHERE nombre_archivo != 'ortofotos.vrt' AND (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+        """)
+        rows = db.execute(query, {"empresa_id": current_user.id_empresa}).fetchall()
         
         features = []
         for row in rows:
             feature = {
                 "type": "Feature",
                 "properties": {
-                    "id": row[0],
-                    "nombre_archivo": row[1],
-                    "ruta_completa": row[2]
+                    "id": row.id,
+                    "nombre_archivo": row.nombre_archivo,
+                    "ruta_completa": row.ruta_completa
                 },
-                "geometry": row[3]
+                "geometry": row.geometry
             }
             features.append(feature)
             
-        cursor.close()
-        conn.close()
-        
         return JSONResponse(content={
             "type": "FeatureCollection",
             "features": features
