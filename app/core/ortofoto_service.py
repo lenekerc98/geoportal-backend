@@ -31,6 +31,32 @@ def gdal_progress_callback(complete, message, user_data):
         print(f"[GDAL Task {task_id}] Progreso: {porcentaje}%")
     return 1 # Devuelve 1 para continuar, 0 para abortar
 
+def run_gdaladdo_with_progress(cmd, task_id, start_pct, end_pct):
+    import subprocess
+    print(f"[GIS Service] Ejecutando: {' '.join(cmd)}")
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    
+    buffer = ""
+    while True:
+        char = p.stdout.read(1)
+        if not char:
+            break
+        
+        buffer += char.decode('utf-8', errors='ignore')
+        
+        if buffer.endswith("..."):
+            digits = "".join([c for c in buffer[:-3] if c.isdigit()])
+            if digits:
+                try:
+                    pct = float(digits)
+                    real_pct = start_pct + (pct / 100.0) * (end_pct - start_pct)
+                    PROGRESS_STORE[task_id] = real_pct
+                except:
+                    pass
+            buffer = ""
+    p.wait()
+    return p.returncode
+
 def obtener_datos_ortofoto(ruta_archivo: str):
     """Usa GDAL para obtener los límites de la imagen y su SRID."""
     try:
@@ -104,9 +130,9 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                     "gdaladdo", "-r", "average", "--config", "COMPRESS_OVERVIEW", "JPEG",
                     ruta_archivo, "2", "4", "8", "16", "32", "64"
                 ]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"[GIS Service] Error en gdaladdo local: {result.stderr}")
+                returncode = run_gdaladdo_with_progress(cmd, task_id, 10.0, 70.0)
+                if returncode != 0:
+                    print(f"[GIS Service] Error en gdaladdo local.")
                     PROGRESS_STORE[task_id] = -1
                     return
                 print("[GIS Service] Pirámides locales creadas exitosamente.")
@@ -137,9 +163,9 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                     "2", "4", "8", "16", "32", "64"
                 ]
                 
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"[GIS Service] Error en gdaladdo: {result.stderr}")
+                returncode = run_gdaladdo_with_progress(cmd, task_id, 30.0, 70.0)
+                if returncode != 0:
+                    print(f"[GIS Service] Error en gdaladdo en modo nube.")
                     PROGRESS_STORE[task_id] = -1
                     return
                 else:
