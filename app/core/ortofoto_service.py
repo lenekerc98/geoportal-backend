@@ -183,7 +183,12 @@ def procesar_ortofoto_background(task_id: str, ruta_archivo: str, db: Session, d
                 with open(vrt_local, 'r', encoding='utf-8') as f:
                     vrt_content = f.read()
                 
-                vrt_content = vrt_content.replace(local_tif, ruta_archivo)
+                import re
+                vrt_content = re.sub(
+                    r'<SourceFilename relativeToVRT="1">.*?</SourceFilename>',
+                    f'<SourceFilename relativeToVRT="0">{ruta_archivo}</SourceFilename>',
+                    vrt_content
+                )
                 
                 with open(vrt_local, 'w', encoding='utf-8') as f:
                     f.write(vrt_content)
