@@ -1082,7 +1082,6 @@ def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
         format="MEM",
         outputBounds=[minx, miny, maxx, maxy],
         outputBoundsSRS="EPSG:4326",
-        srcSRS="EPSG:32717",
         dstSRS="EPSG:3857",
         width=256,
         height=256,
@@ -1149,7 +1148,7 @@ def get_tile(z: int, x: int, y: int, filename: str = None, db: Session = Depends
                 nombre_base = os.path.splitext(filename)[0]
                 vrt_name = f"{nombre_base}.vrt"
                 
-                s3_vrt_path = f"{comp_dir}/{vrt_name}" if is_s3_path(comp_dir or "") else os.path.join(comp_dir or "", vrt_name)
+                s3_vrt_path = f"{comp_dir.rstrip('/')}/{vrt_name}" if is_s3_path(comp_dir or "") else os.path.join(comp_dir or "", vrt_name)
                 
                 if comp_dir and check_path_exists(s3_vrt_path):
                     source_file = get_gdal_path(comp_dir, vrt_name)
