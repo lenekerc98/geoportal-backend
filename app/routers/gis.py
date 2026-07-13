@@ -22,6 +22,8 @@ from app.core.ortofoto_service import procesar_ortofoto_background, PROGRESS_STO
 from app.core.catalogacion_service import run_catalogacion_masiva
 from app.core.logger import log_audit
 import threading
+import json
+from app.services.shapefile_service import procesar_shapefile
 
 from app.core.file_utils import check_path_exists, get_gdal_path, is_s3_path
 
@@ -794,6 +796,42 @@ def list_s3_files(db: Session = Depends(get_db)):
     except Exception as e:
         print("Error en /s3/list:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/import-shapefile")
+async def import_shapefile(
+    empresa_id: int,
+    mapping: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Importa un shapefile (ZIP) y genera tablas dinámicas, posesionarios, predios, vértices y linderos.
+    mapping debe ser un JSON string: '{"cedula": "NUMERO_IDE", "nombre_posesionario": "NOMBRE_PRO", "cod_catastral": "CLAVE_CATA"}'
+    """
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .zip que contenga el shapefile.")
+        
+    try:
+        mapeo = json.loads(mapping)
+    except Exception:
+        raise HTTPException(status_code=400, detail="El parámetro mapping debe ser un JSON válido.")
+        
+    # Guardar ZIP temporal
+    temp_zip_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{file.filename}")
+    with open(temp_zip_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    try:
+        # Llamar al servicio
+        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, db)
+        log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
+        return {"message": "Shapefile importado exitosamente", "data": resultados}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
 
 @router.post("/upload")
 async def upload_file_drag_drop(
