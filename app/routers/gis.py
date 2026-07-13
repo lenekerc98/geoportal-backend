@@ -1073,18 +1073,28 @@ def num2deg(xtile, ytile, zoom):
     lat_deg = math.degrees(lat_rad)
     return lon_deg, lat_deg
 
+def tile_bounds_web_mercator(x, y, z):
+    R = 6378137.0 
+    origin_shift = 2.0 * math.pi * R / 2.0
+    initial_resolution = 2.0 * math.pi * R / 256.0
+    res = initial_resolution / (2.0 ** z)
+    
+    minx = (x * 256.0) * res - origin_shift
+    maxy = origin_shift - (y * 256.0) * res
+    maxx = ((x + 1) * 256.0) * res - origin_shift
+    miny = origin_shift - ((y + 1) * 256.0) * res
+    return minx, miny, maxx, maxy
+
 tile_semaphore = threading.Semaphore(2)
 
 @functools.lru_cache(maxsize=1024)
 def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
     with tile_semaphore:
-        minx, miny = num2deg(x, y + 1, z)
-        maxx, maxy = num2deg(x + 1, y, z)
+        minx, miny, maxx, maxy = tile_bounds_web_mercator(x, y, z)
         
         warp_opts = gdal.WarpOptions(
             format="MEM",
             outputBounds=[minx, miny, maxx, maxy],
-            outputBoundsSRS="EPSG:4326",
             srcSRS="EPSG:32717",
             dstSRS="EPSG:3857",
             width=256,
