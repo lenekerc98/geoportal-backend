@@ -8,6 +8,10 @@ class EmpresaBase(BaseModel):
     telefono: Optional[str] = None
     correo: Optional[str] = None
     direccion: Optional[str] = None
+    provincia: Optional[str] = None
+    canton: Optional[str] = None
+    ciudad: Optional[str] = None
+    sector: Optional[str] = None
     parametros: Optional[Dict[str, Any]] = None
     proyecto_id: Optional[int] = None
 
@@ -20,6 +24,10 @@ class EmpresaUpdate(BaseModel):
     telefono: Optional[str] = None
     correo: Optional[str] = None
     direccion: Optional[str] = None
+    provincia: Optional[str] = None
+    canton: Optional[str] = None
+    ciudad: Optional[str] = None
+    sector: Optional[str] = None
     parametros: Optional[Dict[str, Any]] = None
     proyecto_id: Optional[int] = None
 

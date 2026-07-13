@@ -56,6 +56,10 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS telefono VARCHAR(50)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS correo VARCHAR(100)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS direccion TEXT"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS provincia VARCHAR(100)"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS canton VARCHAR(100)"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS ciudad VARCHAR(100)"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS sector VARCHAR(50)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS parametros JSONB DEFAULT '{}'::jsonb"))
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.posesionario (
