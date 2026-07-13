@@ -27,6 +27,7 @@ def is_superadmin_or_admin(user: Usuario):
             detail="Se requiere rol de Administrador para realizar esta acción."
         )
 
+@router.get("", response_model=List[schemas.Empresa])
 @router.get("/", response_model=List[schemas.Empresa])
 def list_empresas(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     is_superadmin_or_admin(current_user)
@@ -34,6 +35,7 @@ def list_empresas(db: Session = Depends(get_db), current_user: Usuario = Depends
         return db.query(Empresa).filter(Empresa.id == current_user.id_empresa).all()
     return db.query(Empresa).all()
 
+@router.post("", response_model=schemas.Empresa)
 @router.post("/", response_model=schemas.Empresa)
 def create_empresa(empresa: schemas.EmpresaCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     is_superadmin(current_user)
