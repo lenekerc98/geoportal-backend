@@ -3,6 +3,17 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
 
+class Proyecto(Base):
+    __tablename__ = "proyecto"
+    __table_args__ = {'schema': 'catastro'}
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(255), nullable=False)
+    descripcion = Column(String, nullable=True)
+    fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
+
+    empresas = relationship("Empresa", back_populates="proyecto")
+
 class Empresa(Base):
     __tablename__ = "empresa"
     __table_args__ = {'schema': 'catastro'}
@@ -14,7 +25,11 @@ class Empresa(Base):
     correo = Column(String(100), nullable=True)
     direccion = Column(String, nullable=True)
     parametros = Column(JSON, nullable=True, default=dict)
+    proyecto_id = Column(Integer, ForeignKey("catastro.proyecto.id"), nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
+
+    usuarios = relationship("Usuario", back_populates="empresa")
+    proyecto = relationship("Proyecto", back_populates="empresas")
 
     usuarios = relationship("Usuario", back_populates="empresa")
 

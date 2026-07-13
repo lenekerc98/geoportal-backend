@@ -9,6 +9,7 @@ class EmpresaBase(BaseModel):
     correo: Optional[str] = None
     direccion: Optional[str] = None
     parametros: Optional[Dict[str, Any]] = None
+    proyecto_id: Optional[int] = None
 
 class EmpresaCreate(EmpresaBase):
     pass
@@ -20,6 +21,7 @@ class EmpresaUpdate(BaseModel):
     correo: Optional[str] = None
     direccion: Optional[str] = None
     parametros: Optional[Dict[str, Any]] = None
+    proyecto_id: Optional[int] = None
 
 class Empresa(EmpresaBase):
     id: int

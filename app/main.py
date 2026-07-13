@@ -32,6 +32,14 @@ with engine.connect() as connection:
         try:
             connection.execute(text("CREATE SCHEMA IF NOT EXISTS catastro"))
             connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.proyecto (
+                    id SERIAL PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    descripcion TEXT,
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.empresa (
                     id SERIAL PRIMARY KEY,
                     ruc VARCHAR(20) UNIQUE,
@@ -40,9 +48,11 @@ with engine.connect() as connection:
                     correo VARCHAR(100),
                     direccion TEXT,
                     parametros JSONB DEFAULT '{}'::jsonb,
+                    proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL,
                     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS telefono VARCHAR(50)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS correo VARCHAR(100)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS direccion TEXT"))
@@ -226,3 +236,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(empresas.router, prefix="/api")
 app.include_router(gis.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+
+# Lazy import to avoid circular dependency
+from app.routers import proyectos
+app.include_router(proyectos.router, prefix="/api")
