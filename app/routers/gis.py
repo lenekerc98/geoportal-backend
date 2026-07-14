@@ -802,6 +802,8 @@ async def import_shapefile(
     empresa_id: int,
     mapping: str,
     renames: str = "{}",
+    import_type: str = Form("catastro_base"),
+    nombre_capa: str = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
@@ -827,7 +829,7 @@ async def import_shapefile(
         
     try:
         # Llamar al servicio
-        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, renombrar, db)
+        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, renombrar, db, import_type, nombre_capa)
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
     except Exception as e:
@@ -835,6 +837,65 @@ async def import_shapefile(
     finally:
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
+
+@router.get("/capas-adicionales")
+async def get_capas_adicionales(
+    empresa_id: int = None,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Obtiene la lista de capas adicionales para una empresa.
+    """
+    if current_user.rol.nombre.lower() != "superadministrador" and current_user.rol.nombre.lower() != "superadmin":
+        empresa_id = current_user.id_empresa
+    
+    query = "SELECT id, nombre_capa, tabla_db, tipo_geometria, empresa_id, fecha_subida FROM catastro.capas_adicionales"
+    params = {}
+    if empresa_id:
+        query += " WHERE empresa_id = :empresa_id"
+        params["empresa_id"] = empresa_id
+        
+    query += " ORDER BY fecha_subida DESC"
+    
+    try:
+        res = db.execute(text(query), params).mappings().all()
+        return [dict(r) for r in res]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/capa-adicional/{tabla_db}")
+async def get_capa_adicional_geojson(
+    tabla_db: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Obtiene el GeoJSON de una tabla de capa adicional específica.
+    """
+    # Validar tabla_db para evitar SQL Injection básico
+    if not tabla_db.replace("_", "").isalnum() or not tabla_db.startswith("catastro.shape_"):
+        raise HTTPException(status_code=400, detail="Nombre de tabla inválido")
+        
+    query = f"""
+        SELECT jsonb_build_object(
+            'type', 'FeatureCollection',
+            'features', coalesce(jsonb_agg(
+                jsonb_build_object(
+                    'type', 'Feature',
+                    'id', id,
+                    'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
+                    'properties', to_jsonb(t) - 'geom' - 'id'
+                )
+            ), '[]'::jsonb)
+        )
+        FROM {tabla_db} t;
+    """
+    try:
+        result = db.execute(text(query)).scalar()
+        return result or {"type": "FeatureCollection", "features": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error obteniendo capa: {str(e)}")
 
 @router.post("/upload")
 async def upload_file_drag_drop(

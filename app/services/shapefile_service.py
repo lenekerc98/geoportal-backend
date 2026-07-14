@@ -13,7 +13,9 @@ def procesar_shapefile(
     empresa_id: int,
     mapping: Dict[str, str],
     renames: Dict[str, str],
-    db: Session
+    db: Session,
+    import_type: str = "catastro_base",
+    nombre_capa: str = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -95,6 +97,16 @@ def procesar_shapefile(
             "lineas_creadas": 0
         }
         
+        # Flujo 1: Capa Adicional (solo registrar y terminar)
+        if import_type == "capa_adicional":
+            db.execute(
+                text("INSERT INTO catastro.capas_adicionales (nombre_capa, tabla_db, empresa_id) VALUES (:nombre, :tabla, :emp_id)"),
+                {"nombre": nombre_capa or "Capa Sin Nombre", "tabla": tabla_completa, "emp_id": empresa_id}
+            )
+            db.commit()
+            return resultados
+            
+        # Flujo 2: Módulo Catastral Base
         # 5. Sincronizar Posesionarios
         if col_cedula and col_nombre:
             query_posesionarios = text(f"""

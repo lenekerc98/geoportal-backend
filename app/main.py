@@ -40,6 +40,16 @@ with engine.connect() as connection:
                 )
             """))
             connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.capas_adicionales (
+                    id SERIAL PRIMARY KEY,
+                    nombre_capa VARCHAR(255) NOT NULL,
+                    tabla_db VARCHAR(100) NOT NULL,
+                    tipo_geometria VARCHAR(50),
+                    empresa_id INT REFERENCES catastro.empresa(id) ON DELETE CASCADE,
+                    fecha_subida TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.empresa (
                     id SERIAL PRIMARY KEY,
                     ruc VARCHAR(20) UNIQUE,
