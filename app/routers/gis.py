@@ -874,31 +874,46 @@ async def get_capa_adicional_geojson(
     current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Obtiene el GeoJSON de una tabla de capa adicional específica.
+    Obtiene el GeoJSON de una capa adicional desde la tabla unificada.
     """
-    # Validar tabla_db para evitar SQL Injection básico
-    if not tabla_db.replace("_", "").replace(".", "").isalnum() or not tabla_db.startswith("catastro.shape_"):
-        raise HTTPException(status_code=400, detail="Nombre de tabla inválido")
-        
-    query = f"""
+    query = """
         SELECT jsonb_build_object(
             'type', 'FeatureCollection',
             'features', coalesce(jsonb_agg(
                 jsonb_build_object(
                     'type', 'Feature',
-                    'id', id,
-                    'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
-                    'properties', to_jsonb(t) - 'geom' - 'id'
+                    'id', ea.id,
+                    'geometry', ST_AsGeoJSON(ST_Transform(ea.geom, 4326))::json,
+                    'properties', ea.propiedades
                 )
             ), '[]'::jsonb)
         )
-        FROM {tabla_db} t;
+        FROM catastro.elementos_adicionales ea
+        JOIN catastro.capas_adicionales ca ON ea.capa_id = ca.id
+        WHERE ca.tabla_db = :tabla_db;
     """
     try:
-        result = db.execute(text(query)).scalar()
+        result = db.execute(text(query), {"tabla_db": tabla_db}).scalar()
         return result or {"type": "FeatureCollection", "features": []}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo capa: {str(e)}")
+
+@router.delete("/capa-adicional/{tabla_db}")
+async def delete_capa_adicional(
+    tabla_db: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    try:
+        db.execute(
+            text("DELETE FROM catastro.capas_adicionales WHERE tabla_db = :tabla_db"),
+            {"tabla_db": tabla_db}
+        )
+        db.commit()
+        return {"message": "Capa eliminada exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upload")
 async def upload_file_drag_drop(

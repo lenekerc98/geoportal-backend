@@ -35,8 +35,9 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     # Obtener el nombre del rol para incluirlo en el token
     role_name = user.rol.nombre if user.rol else "user"
 
+    default_center = user.empresa.parametros.get("defaultCenter") if user.empresa and user.empresa.parametros else None
     access_token = security.create_access_token(
-        data={"sub": user.username, "role": role_name, "empresa_id": user.id_empresa}, expires_delta=access_token_expires
+        data={"sub": user.username, "role": role_name, "empresa_id": user.id_empresa, "defaultCenter": default_center}, expires_delta=access_token_expires
     )
     
     log_audit(db, "INFO", "LOGIN_SUCCESS", f"Sesión iniciada exitosamente por {form_data.username}.")

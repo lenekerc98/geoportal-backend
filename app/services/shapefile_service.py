@@ -97,12 +97,28 @@ def procesar_shapefile(
             "lineas_creadas": 0
         }
         
-        # Flujo 1: Capa Adicional (solo registrar y terminar)
+        # Flujo 1: Capa Adicional (registrar y mover a elementos_adicionales)
         if import_type == "capa_adicional":
-            db.execute(
-                text("INSERT INTO catastro.capas_adicionales (nombre_capa, tabla_db, empresa_id) VALUES (:nombre, :tabla, :emp_id)"),
+            res_capa = db.execute(
+                text("INSERT INTO catastro.capas_adicionales (nombre_capa, tabla_db, empresa_id) VALUES (:nombre, :tabla, :emp_id) RETURNING id"),
                 {"nombre": nombre_capa or "Capa Sin Nombre", "tabla": tabla_completa, "emp_id": empresa_id}
+            ).mappings().first()
+            
+            capa_id = res_capa["id"]
+            
+            db.execute(
+                text(f"""
+                    INSERT INTO catastro.elementos_adicionales (capa_id, geom, propiedades)
+                    SELECT 
+                        :capa_id,
+                        ST_Force2D(ST_SetSRID(geom, 32717)),
+                        row_to_json(t)::jsonb - 'geom' - 'id' || '{{"codigo_catastral": ""}}'::jsonb
+                    FROM {tabla_completa} t
+                """),
+                {"capa_id": capa_id}
             )
+            
+            db.execute(text(f"DROP TABLE {tabla_completa} CASCADE"))
             db.commit()
             return resultados
             
@@ -206,6 +222,8 @@ def procesar_shapefile(
                 logging.error(f"Error procesando fila {fila['id']} del shapefile: {row_err}")
                 continue
                 
+        # Eliminar tabla temporal al finalizar Catastro Base
+        db.execute(text(f"DROP TABLE {tabla_completa} CASCADE"))
         db.commit()
         return resultados
     except Exception as e:
