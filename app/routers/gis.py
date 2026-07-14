@@ -828,8 +828,11 @@ async def import_shapefile(
         shutil.copyfileobj(file.file, buffer)
         
     try:
+        # Convertir empresa_id 0 a None para permitir capas globales / sin empresa
+        real_empresa_id = None if empresa_id == 0 else empresa_id
+        
         # Llamar al servicio
-        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, renombrar, db, import_type, nombre_capa)
+        resultados = procesar_shapefile(temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa)
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
     except Exception as e:
@@ -874,7 +877,7 @@ async def get_capa_adicional_geojson(
     Obtiene el GeoJSON de una tabla de capa adicional específica.
     """
     # Validar tabla_db para evitar SQL Injection básico
-    if not tabla_db.replace("_", "").isalnum() or not tabla_db.startswith("catastro.shape_"):
+    if not tabla_db.replace("_", "").replace(".", "").isalnum() or not tabla_db.startswith("catastro.shape_"):
         raise HTTPException(status_code=400, detail="Nombre de tabla inválido")
         
     query = f"""
