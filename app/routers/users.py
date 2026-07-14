@@ -198,7 +198,7 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
             pass
 
     # Si se actualiza la empresa
-    if current_user.rol and current_user.rol.nombre.lower() == "superadmin":
+    if current_user.rol and current_user.rol.nombre.lower() in ["superadministrador", "superadmin"]:
         if hasattr(user_update, "id_empresa") and user_update.id_empresa is not None:
             db_user.id_empresa = user_update.id_empresa
         # si envían explícitamente id_empresa como nulo, podríamos permitir limpiar la empresa
