@@ -68,7 +68,12 @@ def update_empresa(empresa_id: int, emp: schemas.EmpresaUpdate, db: Session = De
     if emp.telefono is not None: db_empresa.telefono = emp.telefono
     if emp.correo is not None: db_empresa.correo = emp.correo
     if emp.direccion is not None: db_empresa.direccion = emp.direccion
+    if emp.provincia is not None: db_empresa.provincia = emp.provincia
+    if emp.canton is not None: db_empresa.canton = emp.canton
+    if emp.ciudad is not None: db_empresa.ciudad = emp.ciudad
+    if emp.sector is not None: db_empresa.sector = emp.sector
     if emp.parametros is not None: db_empresa.parametros = emp.parametros
+    if emp.proyecto_id is not None: db_empresa.proyecto_id = emp.proyecto_id
     
     db.commit()
     db.refresh(db_empresa)
