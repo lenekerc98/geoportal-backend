@@ -119,20 +119,22 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
     
     # Sincronizar con usuarios de PostgreSQL
     try:
-        # Crear usuario en PostgreSQL con la contraseña plana provista
-        db.execute(text(f"CREATE USER {user.username} WITH PASSWORD :password"), {"password": user.password})
-        db.execute(text(f"GRANT USAGE ON SCHEMA seguridad TO {user.username}"))
-        db.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA seguridad TO {user.username}"))
-        db.execute(text(f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA seguridad TO {user.username}"))
-        db.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA seguridad GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {user.username}"))
-        db.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA seguridad GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {user.username}"))
-    except Exception as e:
-        # Si el usuario ya existe en PostgreSQL, intentar actualizar contraseña y otorgar permisos
-        try:
-            db.execute(text(f"ALTER USER {user.username} WITH PASSWORD :password"), {"password": user.password})
+        with db.begin_nested():
+            # Crear usuario en PostgreSQL con la contraseña plana provista
+            db.execute(text(f"CREATE USER {user.username} WITH PASSWORD :password"), {"password": user.password})
             db.execute(text(f"GRANT USAGE ON SCHEMA seguridad TO {user.username}"))
             db.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA seguridad TO {user.username}"))
             db.execute(text(f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA seguridad TO {user.username}"))
+            db.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA seguridad GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {user.username}"))
+            db.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA seguridad GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {user.username}"))
+    except Exception as e:
+        # Si el usuario ya existe en PostgreSQL, intentar actualizar contraseña y otorgar permisos
+        try:
+            with db.begin_nested():
+                db.execute(text(f"ALTER USER {user.username} WITH PASSWORD :password"), {"password": user.password})
+                db.execute(text(f"GRANT USAGE ON SCHEMA seguridad TO {user.username}"))
+                db.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA seguridad TO {user.username}"))
+                db.execute(text(f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA seguridad TO {user.username}"))
         except Exception:
             pass
 
@@ -166,7 +168,8 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
             
         # Intentar renombrar usuario en PostgreSQL
         try:
-            db.execute(text(f"ALTER USER {old_username} RENAME TO {user_update.username}"))
+            with db.begin_nested():
+                db.execute(text(f"ALTER USER {old_username} RENAME TO {user_update.username}"))
         except Exception:
             pass
             
@@ -184,7 +187,8 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
     if user_update.password is not None:
         db_user.password_hash = security.get_password_hash(user_update.password)
         try:
-            db.execute(text(f"ALTER USER {current_username} WITH PASSWORD :password"), {"password": user_update.password})
+            with db.begin_nested():
+                db.execute(text(f"ALTER USER {current_username} WITH PASSWORD :password"), {"password": user_update.password})
         except Exception:
             pass
         
@@ -193,7 +197,8 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
         db_user.activo = user_update.activo
         login_clause = "LOGIN" if user_update.activo else "NOLOGIN"
         try:
-            db.execute(text(f"ALTER USER {current_username} {login_clause}"))
+            with db.begin_nested():
+                db.execute(text(f"ALTER USER {current_username} {login_clause}"))
         except Exception:
             pass
 
@@ -208,8 +213,13 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
         if "id_empresa" in user_update.model_dump(exclude_unset=True):
             db_user.id_empresa = user_update.id_empresa
         
-    db.commit()
-    db.refresh(db_user)
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
     return db_user
 
 @router.delete("/users/{id_usuario}", status_code=status.HTTP_200_OK)
