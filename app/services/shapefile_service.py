@@ -12,6 +12,7 @@ def procesar_shapefile(
     file_path: str, 
     empresa_id: int,
     mapping: Dict[str, str],
+    renames: Dict[str, str],
     db: Session
 ) -> Dict[str, Any]:
     """
@@ -66,6 +67,18 @@ def procesar_shapefile(
         if result.returncode != 0:
             raise ValueError(f"Error en ogr2ogr: {result.stderr}")
             
+        # 3.5 Renombrar columnas si se solicita
+        for old_col, new_col in renames.items():
+            if old_col and new_col and old_col != new_col:
+                try:
+                    db.execute(text(f'ALTER TABLE {tabla_completa} RENAME COLUMN "{old_col}" TO "{new_col}"'))
+                    # Actualizar el mapping para que apunte al nuevo nombre
+                    for k, v in mapping.items():
+                        if v == old_col:
+                            mapping[k] = new_col
+                except Exception as ren_err:
+                    logging.warning(f"Error al renombrar columna {old_col} a {new_col}: {ren_err}")
+
         # 4. Inyectar empresa_id a la tabla original cruda
         db.execute(text(f"ALTER TABLE {tabla_completa} ADD COLUMN IF NOT EXISTS empresa_id INT"))
         db.execute(text(f"UPDATE {tabla_completa} SET empresa_id = :empresa_id"), {"empresa_id": empresa_id})

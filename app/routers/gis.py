@@ -801,21 +801,24 @@ def list_s3_files(db: Session = Depends(get_db)):
 async def import_shapefile(
     empresa_id: int,
     mapping: str,
+    renames: str = "{}",
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
     """
     Importa un shapefile (ZIP) y genera tablas dinámicas, posesionarios, predios, vértices y linderos.
-    mapping debe ser un JSON string: '{"cedula": "NUMERO_IDE", "nombre_posesionario": "NOMBRE_PRO", "cod_catastral": "CLAVE_CATA"}'
+    mapping debe ser un JSON string: '{"cedula": "NUMERO_IDE", ...}'
+    renames debe ser un JSON string: '{"OLD_COL": "NEW_COL"}'
     """
     if not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="El archivo debe ser un .zip que contenga el shapefile.")
         
     try:
         mapeo = json.loads(mapping)
+        renombrar = json.loads(renames)
     except Exception:
-        raise HTTPException(status_code=400, detail="El parámetro mapping debe ser un JSON válido.")
+        raise HTTPException(status_code=400, detail="Los parámetros mapping y renames deben ser JSON válidos.")
         
     # Guardar ZIP temporal
     temp_zip_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{file.filename}")
@@ -824,7 +827,7 @@ async def import_shapefile(
         
     try:
         # Llamar al servicio
-        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, db)
+        resultados = procesar_shapefile(temp_zip_path, empresa_id, mapeo, renombrar, db)
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
     except Exception as e:
