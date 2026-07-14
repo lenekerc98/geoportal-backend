@@ -19,6 +19,7 @@ class UsuarioCreate(UsuarioBase):
 class Usuario(UsuarioBase):
     id_usuario: int
     id_rol: int
+    id_empresa: Optional[int] = None
     activo: bool
 
     class Config:
