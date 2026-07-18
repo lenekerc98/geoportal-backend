@@ -140,6 +140,19 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE CASCADE"))
             connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
             connection.execute(text("ALTER TABLE catastro.codigo_catastral ADD COLUMN IF NOT EXISTS posesionario_id INT"))
+            
+            # Historical 4D Columns
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS predio_padre_id INT REFERENCES catastro.predio(id)"))
+            
+            connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
+            connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
+            
+            connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
+            connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
+            connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS tramo VARCHAR(100)"))
+
             connection.execute(text("DROP VIEW IF EXISTS catastro.v_predio_completo CASCADE"))
             connection.execute(text("""
                 CREATE OR REPLACE VIEW catastro.v_predio_completo AS

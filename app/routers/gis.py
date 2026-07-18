@@ -66,6 +66,7 @@ from typing import Optional
 async def get_predios_geojson(
     fecha_inicio: Optional[str] = None,
     fecha_fin: Optional[str] = None,
+    fecha_historica: Optional[str] = None,
     db: Session = Depends(get_db), 
     current_user: Any = Depends(get_current_user)
 ):
@@ -98,15 +99,18 @@ async def get_predios_geojson(
         FROM catastro.v_predio_completo
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0}
-        {1};
+        {1}
+        {2};
     """.format(
         "AND fecha_creacion >= :fecha_inicio" if fecha_inicio else "",
-        "AND fecha_creacion <= :fecha_fin" if fecha_fin else ""
+        "AND fecha_creacion <= :fecha_fin" if fecha_fin else "",
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
         params = {"empresa_id": current_user.id_empresa}
         if fecha_inicio: params["fecha_inicio"] = fecha_inicio
         if fecha_fin: params["fecha_fin"] = fecha_fin
+        if fecha_historica: params["fecha_historica"] = fecha_historica
         
         result = db.execute(query, params).scalar_one_or_none()
         return result or {"type": "FeatureCollection", "features": []}
@@ -328,7 +332,11 @@ async def delete_predio(id: int, db: Session = Depends(get_db), current_user: An
         raise HTTPException(status_code=400, detail=f"Error al eliminar predio: {str(e)}")
 
 @router.get("/vertices", response_model=schemas.GeoJSONFeatureCollection)
-async def get_vertices_geojson(db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+async def get_vertices_geojson(
+    fecha_historica: Optional[str] = None,
+    db: Session = Depends(get_db), 
+    current_user: Any = Depends(get_current_user)
+):
     """
     Obtener todos los vértices en formato GeoJSON FeatureCollection.
     """
@@ -354,10 +362,16 @@ async def get_vertices_geojson(db: Session = Depends(get_db), current_user: Any 
                 )
             ), '[]'::json)
         )
-        FROM catastro.vertice;
-    """)
+        FROM catastro.vertice
+        WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+        {0};
+    """.format(
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
+    ))
     try:
-        result = db.execute(query).scalar_one_or_none()
+        params = {"empresa_id": current_user.id_empresa}
+        if fecha_historica: params["fecha_historica"] = fecha_historica
+        result = db.execute(query, params).scalar_one_or_none()
         return result or {"type": "FeatureCollection", "features": []}
     except Exception as e:
         raise HTTPException(
@@ -366,7 +380,11 @@ async def get_vertices_geojson(db: Session = Depends(get_db), current_user: Any 
         )
 
 @router.get("/lineas", response_model=schemas.GeoJSONFeatureCollection)
-async def get_lineas_geojson(db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+async def get_lineas_geojson(
+    fecha_historica: Optional[str] = None,
+    db: Session = Depends(get_db), 
+    current_user: Any = Depends(get_current_user)
+):
     """
     Obtener todas las líneas de lindero en formato GeoJSON FeatureCollection.
     """
@@ -393,10 +411,16 @@ async def get_lineas_geojson(db: Session = Depends(get_db), current_user: Any = 
                 )
             ), '[]'::json)
         )
-        FROM catastro.linea_lindero;
-    """)
+        FROM catastro.linea_lindero
+        WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+        {0};
+    """.format(
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
+    ))
     try:
-        result = db.execute(query).scalar_one_or_none()
+        params = {"empresa_id": current_user.id_empresa}
+        if fecha_historica: params["fecha_historica"] = fecha_historica
+        result = db.execute(query, params).scalar_one_or_none()
         return result or {"type": "FeatureCollection", "features": []}
     except Exception as e:
         raise HTTPException(
