@@ -67,6 +67,7 @@ async def get_predios_geojson(
     fecha_inicio: Optional[str] = None,
     fecha_fin: Optional[str] = None,
     fecha_historica: Optional[str] = None,
+    empresa_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: Any = Depends(get_current_user)
 ):
@@ -107,7 +108,11 @@ async def get_predios_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        params = {"empresa_id": current_user.id_empresa}
+        target_empresa_id = current_user.id_empresa
+        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+            target_empresa_id = empresa_id
+            
+        params = {"empresa_id": target_empresa_id}
         if fecha_inicio: params["fecha_inicio"] = fecha_inicio
         if fecha_fin: params["fecha_fin"] = fecha_fin
         if fecha_historica: params["fecha_historica"] = fecha_historica
@@ -334,6 +339,7 @@ async def delete_predio(id: int, db: Session = Depends(get_db), current_user: An
 @router.get("/vertices", response_model=schemas.GeoJSONFeatureCollection)
 async def get_vertices_geojson(
     fecha_historica: Optional[str] = None,
+    empresa_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: Any = Depends(get_current_user)
 ):
@@ -369,7 +375,11 @@ async def get_vertices_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        params = {"empresa_id": current_user.id_empresa}
+        target_empresa_id = current_user.id_empresa
+        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+            target_empresa_id = empresa_id
+            
+        params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
         result = db.execute(query, params).scalar_one_or_none()
         return result or {"type": "FeatureCollection", "features": []}
@@ -382,6 +392,7 @@ async def get_vertices_geojson(
 @router.get("/lineas", response_model=schemas.GeoJSONFeatureCollection)
 async def get_lineas_geojson(
     fecha_historica: Optional[str] = None,
+    empresa_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: Any = Depends(get_current_user)
 ):
@@ -418,7 +429,11 @@ async def get_lineas_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        params = {"empresa_id": current_user.id_empresa}
+        target_empresa_id = current_user.id_empresa
+        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+            target_empresa_id = empresa_id
+            
+        params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
         result = db.execute(query, params).scalar_one_or_none()
         return result or {"type": "FeatureCollection", "features": []}
