@@ -44,6 +44,7 @@ class LinderoBase(BaseModel):
     longitud: float
     rumbo: str
     colindante: Optional[str] = None
+    tramo: Optional[str] = None
 
 class Lindero(LinderoBase):
     id: int

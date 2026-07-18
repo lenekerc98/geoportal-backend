@@ -553,7 +553,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     
     # 3. Obtener las líneas de lindero (lados/tramos)
     q_linderos = text("""
-        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, ST_AsText(geom) as geom_wkt
+        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, tramo, ST_AsText(geom) as geom_wkt
         FROM catastro.linea_lindero 
         WHERE predio_id = :predio_id
         ORDER BY id
@@ -591,6 +591,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
             longitud=float(l["longitud"]),
             rumbo=l["rumbo"],
             colindante=l["colindante"],
+            tramo=l["tramo"],
             geom_wkt=l["geom_wkt"]
         ) for l in linderos_rows
     ]
