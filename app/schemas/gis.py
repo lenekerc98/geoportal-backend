@@ -42,7 +42,7 @@ class Vertice(VerticeBase):
 
 class LinderoBase(BaseModel):
     longitud: float
-    rumbo: str
+    rumbo: Optional[str] = None
     colindante: Optional[str] = None
     tramo: Optional[str] = None
 

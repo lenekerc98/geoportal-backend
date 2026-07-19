@@ -17,7 +17,7 @@ def health_check(db: Session = Depends(get_db)):
         "api": "OK",
         "database": "ERROR",
         "storage": "ERROR",
-        "storage_mode": os.getenv("VITE_STORAGE_MODE", "local")
+        "storage_mode": os.getenv("STORAGE_MODE", "local")
     }
 
     # Check Database
@@ -29,7 +29,7 @@ def health_check(db: Session = Depends(get_db)):
 
     # Check Storage
     try:
-        storage_mode = os.getenv("VITE_STORAGE_MODE", "local")
+        storage_mode = os.getenv("STORAGE_MODE", "local")
         if storage_mode == "s3":
             s3_bucket = os.getenv("AWS_S3_BUCKET")
             if not s3_bucket:

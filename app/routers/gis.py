@@ -208,7 +208,7 @@ def _generar_vertices_y_linderos(db: Session, predio_id: int):
             p.id, 
             CASE WHEN EXISTS (SELECT 1 FROM catastro.codigo_catastral cc WHERE cc.codigo = p.cod_catastral) THEN p.cod_catastral ELSE NULL END,
             ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1))),
-            NULL, -- El rumbo dms puede calcularse después o en otra función
+            catastro.calcular_rumbo(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
             '', -- Colindante inicial vacío
             ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
             p.empresa_id
@@ -450,9 +450,9 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     Obtener el detalle espacial completo de un predio (Polígono, Vértices y Linderos) 
     conectado por el Código Catastral.
     """
-    # 1. Obtener datos del predio y su geometría en formato WKT
+    # 1. Obtener datos del predio y su geometría en formato WKT (Transformado a WGS84 para Leaflet)
     q_predio = text("""
-        SELECT id, cod_catastral, area_ha, posesionario_id, nombre_posesionario, cedula, estado, fecha_creacion, fecha_baja, predio_padre_id, ST_AsText(geom) as geom_wkt
+        SELECT id, cod_catastral, area_ha, posesionario_id, nombre_posesionario, cedula, estado, fecha_creacion, fecha_baja, predio_padre_id, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
         FROM catastro.v_predio_completo 
         WHERE cod_catastral = :cod_catastral
     """)
@@ -467,7 +467,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     
     # 2. Obtener los vértices del predio
     q_vertices = text("""
-        SELECT id, predio_id, cod_catastral, codigo, coord_x, coord_y, ST_AsText(geom) as geom_wkt
+        SELECT id, predio_id, cod_catastral, codigo, coord_x, coord_y, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
         FROM catastro.vertice 
         WHERE predio_id = :predio_id
         ORDER BY codigo
@@ -476,7 +476,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     
     # 3. Obtener las líneas de lindero (lados/tramos)
     q_linderos = text("""
-        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, ST_AsText(geom) as geom_wkt
+        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
         FROM catastro.linea_lindero 
         WHERE predio_id = :predio_id
         ORDER BY id
