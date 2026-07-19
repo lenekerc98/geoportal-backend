@@ -9,7 +9,7 @@ load_dotenv()
 
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_size=20, max_overflow=50, pool_timeout=60.0)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_size=20, max_overflow=50, pool_timeout=60.0, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

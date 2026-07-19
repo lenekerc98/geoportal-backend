@@ -109,7 +109,8 @@ async def get_predios_geojson(
     ))
     try:
         target_empresa_id = current_user.id_empresa
-        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+        role_name = current_user.rol.nombre if current_user.rol else ""
+        if role_name.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
             target_empresa_id = empresa_id
             
         params = {"empresa_id": target_empresa_id}

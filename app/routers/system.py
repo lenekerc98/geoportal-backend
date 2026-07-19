@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -9,6 +10,43 @@ router = APIRouter(
     prefix="/system",
     tags=["system"]
 )
+
+@router.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    health_status = {
+        "api": "OK",
+        "database": "ERROR",
+        "storage": "ERROR",
+        "storage_mode": os.getenv("VITE_STORAGE_MODE", "local")
+    }
+
+    # Check Database
+    try:
+        db.execute(text("SELECT 1"))
+        health_status["database"] = "OK"
+    except Exception as e:
+        health_status["database"] = f"ERROR: {str(e)}"
+
+    # Check Storage
+    try:
+        storage_mode = os.getenv("VITE_STORAGE_MODE", "local")
+        if storage_mode == "s3":
+            s3_bucket = os.getenv("AWS_S3_BUCKET")
+            if not s3_bucket:
+                health_status["storage"] = "ERROR: AWS_S3_BUCKET not configured"
+            else:
+                # Basic check, just assume ok if configured or do a boto3 test if needed
+                health_status["storage"] = "OK"
+        else:
+            upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'uploads')
+            if os.path.exists(upload_dir) and os.access(upload_dir, os.W_OK):
+                health_status["storage"] = "OK"
+            else:
+                health_status["storage"] = "ERROR: Local upload dir not writable or missing"
+    except Exception as e:
+        health_status["storage"] = f"ERROR: {str(e)}"
+
+    return health_status
 
 @router.get("/logs")
 def get_system_logs(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
