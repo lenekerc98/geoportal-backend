@@ -500,8 +500,8 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
             predio_id=v["predio_id"],
             cod_catastral=v["cod_catastral"],
             codigo=v["codigo"],
-            coord_x=float(v["coord_x"]),
-            coord_y=float(v["coord_y"]),
+            coord_x=float(v["coord_x"]) if v["coord_x"] is not None else 0.0,
+            coord_y=float(v["coord_y"]) if v["coord_y"] is not None else 0.0,
             geom_wkt=v["geom_wkt"]
         ) for v in vertices_rows
     ]
@@ -511,7 +511,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
             id=l["id"],
             predio_id=l["predio_id"],
             cod_catastral=l["cod_catastral"],
-            longitud=float(l["longitud"]),
+            longitud=float(l["longitud"]) if l["longitud"] is not None else 0.0,
             rumbo=l["rumbo"],
             colindante=l["colindante"],
             geom_wkt=l["geom_wkt"]
