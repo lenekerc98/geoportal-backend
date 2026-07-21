@@ -64,6 +64,7 @@ class PredioCreate(BaseModel):
     geom_geojson: dict  # Un diccionario GeoJSON Geometry válido, ej: {"type": "Polygon", "coordinates": [[[lng, lat], ...]]}
     cod_catastral: Optional[str] = None
     es_utm: Optional[bool] = False
+    colindantes: Optional[List[str]] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -71,6 +72,7 @@ class PredioUpdate(BaseModel):
     cod_catastral: Optional[str] = None
     estado: Optional[str] = None
     es_utm: Optional[bool] = False
+    colindantes: Optional[List[str]] = None
 
 class Predio(PredioBase):
     id: int
