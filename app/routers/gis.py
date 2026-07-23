@@ -239,12 +239,14 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     if predio.es_utm:
         geom_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717)"
         
+    empresa_to_use = predio.empresa_id if predio.empresa_id else current_user.id_empresa
+    
     query_codigo = text("""
         INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
         VALUES (:codigo, :posesionario_id, :empresa_id, true)
         ON CONFLICT (codigo) DO NOTHING;
     """)
-    db.execute(query_codigo, {"codigo": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": current_user.id_empresa})
+    db.execute(query_codigo, {"codigo": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": empresa_to_use})
 
     query = text(f"""
         INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id)
@@ -256,7 +258,7 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "posesionario_id": predio.posesionario_id,
             "cod_catastral": predio.cod_catastral,
             "geojson": geojson_str,
-            "empresa_id": current_user.id_empresa
+            "empresa_id": empresa_to_use
         })
         new_id = result.scalar()
         
@@ -290,11 +292,15 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         
         # Asegurar que exista en codigo_catastral
         query_codigo = text("""
-            INSERT INTO catastro.codigo_catastral (codigo, activo)
-            VALUES (:cod_catastral, true)
+            INSERT INTO catastro.codigo_catastral (codigo, activo, empresa_id)
+            VALUES (:cod_catastral, true, :empresa_id)
             ON CONFLICT (codigo) DO NOTHING;
         """)
-        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral})
+        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "empresa_id": predio.empresa_id or current_user.id_empresa})
+        
+    if predio.empresa_id is not None:
+        updates.append("empresa_id = :empresa_id")
+        params["empresa_id"] = predio.empresa_id
         
     if predio.estado is not None:
         updates.append("estado = :estado")
