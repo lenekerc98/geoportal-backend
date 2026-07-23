@@ -85,6 +85,10 @@ class Predio(PredioBase):
     fecha_creacion: Optional[Any] = None
     fecha_baja: Optional[Any] = None
     predio_padre_id: Optional[int] = None
+    empresa_id: Optional[int] = None
+    id_provincia: Optional[int] = None
+    id_canton: Optional[int] = None
+    id_ciudad: Optional[int] = None
     geom_wkt: str  # Representación en texto: "POLYGON((x1 y1, ...))"
 
     class Config:

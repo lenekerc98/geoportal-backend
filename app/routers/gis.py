@@ -248,9 +248,24 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     """)
     db.execute(query_codigo, {"codigo": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": empresa_to_use})
 
+    geom_4326_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326)"
+    if predio.es_utm:
+        geom_4326_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717), 4326)"
+        
+    query_dpa = text(f"""
+        SELECT 
+          (SELECT id FROM catastro.provincias WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_provincia,
+          (SELECT id FROM catastro.cantones WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_canton,
+          (SELECT id FROM catastro.ciudades WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_ciudad
+    """)
+    dpa_res = db.execute(query_dpa, {"geojson": geojson_str}).fetchone()
+    id_prov = getattr(dpa_res, "id_provincia", None) if dpa_res else None
+    id_cant = getattr(dpa_res, "id_canton", None) if dpa_res else None
+    id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None
+
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, id_provincia, id_canton, id_ciudad)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :id_provincia, :id_canton, :id_ciudad)
         RETURNING id;
     """)
     try:
@@ -258,7 +273,10 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "posesionario_id": predio.posesionario_id,
             "cod_catastral": predio.cod_catastral,
             "geojson": geojson_str,
-            "empresa_id": empresa_to_use
+            "empresa_id": empresa_to_use,
+            "id_provincia": id_prov,
+            "id_canton": id_cant,
+            "id_ciudad": id_ciud
         })
         new_id = result.scalar()
         
@@ -307,9 +325,31 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         params["estado"] = predio.estado
         
     if predio.geom_geojson is not None:
-        updates.append("geom = ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717)")
-        updates.append("area_ha = ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717)) / 10000.0")
         params["geojson"] = json.dumps(predio.geom_geojson)
+        geom_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717)"
+        geom_4326_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326)"
+        
+        if getattr(predio, 'es_utm', False):
+            geom_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717)"
+            geom_4326_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717), 4326)"
+            
+        updates.append(f"geom = {geom_sql}")
+        updates.append(f"area_ha = ST_Area({geom_sql}) / 10000.0")
+        
+        query_dpa = text(f"""
+            SELECT 
+              (SELECT id FROM catastro.provincias WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_provincia,
+              (SELECT id FROM catastro.cantones WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_canton,
+              (SELECT id FROM catastro.ciudades WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_ciudad
+        """)
+        dpa_res = db.execute(query_dpa, {"geojson": params["geojson"]}).fetchone()
+        if dpa_res:
+            updates.append("id_provincia = :id_provincia")
+            updates.append("id_canton = :id_canton")
+            updates.append("id_ciudad = :id_ciudad")
+            params["id_provincia"] = getattr(dpa_res, "id_provincia", None)
+            params["id_canton"] = getattr(dpa_res, "id_canton", None)
+            params["id_ciudad"] = getattr(dpa_res, "id_ciudad", None)
         
     if not updates:
         return {"message": "No hay campos para actualizar"}
