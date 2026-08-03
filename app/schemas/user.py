@@ -8,6 +8,20 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     username: Optional[str] = None
 
+class RolSchema(BaseModel):
+    id_rol: int
+    nombre: str
+    descripcion: Optional[str] = None
+    permisos: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
+
+class RolUpdate(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    permisos: Optional[dict] = None
+
 class UsuarioBase(BaseModel):
     username: str
 
@@ -21,6 +35,7 @@ class Usuario(UsuarioBase):
     id_rol: int
     id_empresa: Optional[int] = None
     activo: bool
+    rol: Optional[RolSchema] = None
 
     class Config:
         from_attributes = True

@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
-from app.routers import auth, users, gis, system, empresas
+from app.routers import auth, users, gis, system, empresas, proyectos
 from osgeo import gdal
 
 import sys
@@ -145,6 +145,8 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS predio_padre_id INT REFERENCES catastro.predio(id)"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE SET NULL"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
             
             connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
             connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
@@ -152,6 +154,12 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
             connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
             connection.execute(text("ALTER TABLE catastro.linea_lindero ADD COLUMN IF NOT EXISTS tramo VARCHAR(100)"))
+
+            try:
+                connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE SET NULL"))
+                connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
+            except Exception:
+                pass
 
             connection.execute(text("DROP VIEW IF EXISTS catastro.v_predio_completo CASCADE"))
             connection.execute(text("""
@@ -161,6 +169,7 @@ with engine.connect() as connection:
                     p.cod_catastral,
                     p.posesionario_id,
                     p.empresa_id,
+                    p.proyecto_id,
                     p.area_ha,
                     p.geom,
                     p.estado,
@@ -261,9 +270,6 @@ def read_root():
 app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(empresas.router, prefix="/api")
+app.include_router(proyectos.router, prefix="/api")
 app.include_router(gis.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
-
-# Lazy import to avoid circular dependency
-from app.routers import proyectos
-app.include_router(proyectos.router, prefix="/api")

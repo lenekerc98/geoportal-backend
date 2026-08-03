@@ -13,9 +13,11 @@ load_dotenv()
 
 # Directorio donde se crearán los VRTs y OVRs
 COMPLEMENTOS_DIR = os.getenv("DIR_ORTOFOTOS_COMPLEMENTOS", r"C:\LNCZ\proyecto-catastro-2026\Ortofotos\Complementos")
-ORTOFOTOS_DIR = os.getenv("DIR_ORTOFOTOS", r"C:\LNCZ\proyecto-catastro-2026\Ortofotos\Ortofotos")
-os.makedirs(COMPLEMENTOS_DIR, exist_ok=True)
-os.makedirs(ORTOFOTOS_DIR, exist_ok=True)
+ORTOFOTOS_DIR = os.getenv("DIR_ORTOFOTOS_ORIGINALES", r"C:\LNCZ\proyecto-catastro-2026\Ortofotos\Ortofotos")
+if not COMPLEMENTOS_DIR.startswith("s3://"):
+    os.makedirs(COMPLEMENTOS_DIR, exist_ok=True)
+if not ORTOFOTOS_DIR.startswith("s3://"):
+    os.makedirs(ORTOFOTOS_DIR, exist_ok=True)
 VRT_FILE = os.path.join(COMPLEMENTOS_DIR, "ortofotos.vrt")
 SRID_DESTINO = 32717  # UTM 17S (Catastro 2026)
 

@@ -39,6 +39,11 @@ def health_check(db: Session = Depends(get_db)):
                 health_status["storage"] = "OK"
         else:
             upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'uploads')
+            if not os.path.exists(upload_dir):
+                try:
+                    os.makedirs(upload_dir, exist_ok=True)
+                except Exception:
+                    pass
             if os.path.exists(upload_dir) and os.access(upload_dir, os.W_OK):
                 health_status["storage"] = "OK"
             else:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON, Numeric
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
@@ -8,11 +8,18 @@ class Proyecto(Base):
     __table_args__ = {'schema': 'catastro'}
 
     id = Column(Integer, primary_key=True, index=True)
+    empresa_id = Column(Integer, ForeignKey("catastro.empresa.id", ondelete="CASCADE"), nullable=False)
     nombre = Column(String(255), nullable=False)
     descripcion = Column(String, nullable=True)
+    estado = Column(String(50), default='Activo')
+    map_lat = Column(Numeric(15,8), default=-1.5833)
+    map_lng = Column(Numeric(15,8), default=-79.4667)
+    map_zoom = Column(Integer, default=14)
+    map_basemap = Column(String(100), default='osm')
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
-    empresas = relationship("Empresa", back_populates="proyecto")
+    empresa = relationship("Empresa", back_populates="proyectos")
+
 
 class Empresa(Base):
     __tablename__ = "empresa"
@@ -29,13 +36,16 @@ class Empresa(Base):
     ciudad = Column(String(100), nullable=True)
     sector = Column(String(50), nullable=True)
     parametros = Column(JSON, nullable=True, default=dict)
-    proyecto_id = Column(Integer, ForeignKey("catastro.proyecto.id"), nullable=True)
+    logo_url = Column(String(500), nullable=True)
+    nombre_alcalde = Column(String(200), nullable=True)
+    nombre_director = Column(String(200), nullable=True)
+    sbu_actual = Column(Numeric(10,2), nullable=True)
+    valor_m2_urbano = Column(Numeric(10,2), nullable=True)
+    valor_m2_rural = Column(Numeric(10,2), nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
     usuarios = relationship("Usuario", back_populates="empresa")
-    proyecto = relationship("Proyecto", back_populates="empresas")
-
-    usuarios = relationship("Usuario", back_populates="empresa")
+    proyectos = relationship("Proyecto", back_populates="empresa")
 
 class Rol(Base):
     __tablename__ = "roles"
@@ -44,6 +54,7 @@ class Rol(Base):
     id_rol = Column(Integer, primary_key=True, index=True)
     nombre = Column(String(50), unique=True, nullable=False)
     descripcion = Column(String)
+    permisos = Column(JSON, nullable=True)
 
     usuarios = relationship("Usuario", back_populates="rol")
 

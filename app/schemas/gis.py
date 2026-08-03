@@ -66,6 +66,7 @@ class PredioCreate(BaseModel):
     es_utm: Optional[bool] = False
     colindantes: Optional[List[str]] = None
     empresa_id: Optional[int] = None
+    proyecto_id: Optional[int] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -75,6 +76,7 @@ class PredioUpdate(BaseModel):
     es_utm: Optional[bool] = False
     colindantes: Optional[List[str]] = None
     empresa_id: Optional[int] = None
+    proyecto_id: Optional[int] = None
 
 class Predio(PredioBase):
     id: int
@@ -86,6 +88,7 @@ class Predio(PredioBase):
     fecha_baja: Optional[Any] = None
     predio_padre_id: Optional[int] = None
     empresa_id: Optional[int] = None
+    proyecto_id: Optional[int] = None
     id_provincia: Optional[int] = None
     id_canton: Optional[int] = None
     id_ciudad: Optional[int] = None

@@ -43,13 +43,13 @@ BEGIN
     
     -- Formato: N 45° 30' 15.2" E  o S ...
     IF quadrant = 'NE' THEN
-        RETURN 'N ' || d::text || '° ' || m::text || ''' ' || round(s::numeric, 1)::text || '" E';
+        RETURN 'N ' || d::text || '° ' || m::text || ''' ' || round(s::numeric)::text || '" E';
     ELSIF quadrant = 'SE' THEN
-        RETURN 'S ' || d::text || '° ' || m::text || ''' ' || round(s::numeric, 1)::text || '" E';
+        RETURN 'S ' || d::text || '° ' || m::text || ''' ' || round(s::numeric)::text || '" E';
     ELSIF quadrant = 'SW' THEN
-        RETURN 'S ' || d::text || '° ' || m::text || ''' ' || round(s::numeric, 1)::text || '" W';
+        RETURN 'S ' || d::text || '° ' || m::text || ''' ' || round(s::numeric)::text || '" W';
     ELSE
-        RETURN 'N ' || d::text || '° ' || m::text || ''' ' || round(s::numeric, 1)::text || '" W';
+        RETURN 'N ' || d::text || '° ' || m::text || ''' ' || round(s::numeric)::text || '" W';
     END IF;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;

@@ -68,6 +68,7 @@ async def get_predios_geojson(
     fecha_fin: Optional[str] = None,
     fecha_historica: Optional[str] = None,
     empresa_id: Optional[int] = None,
+    proyecto_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: Any = Depends(get_current_user)
 ):
@@ -92,13 +93,15 @@ async def get_predios_geojson(
                         'estado', estado,
                         'fecha_creacion', fecha_creacion,
                         'fecha_baja', fecha_baja,
-                        'predio_padre_id', predio_padre_id
+                        'predio_padre_id', predio_padre_id,
+                        'proyecto_id', proyecto_id
                     )
                 )
             ), '[]'::json)
         )
         FROM catastro.v_predio_completo
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+        AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id)
         {0}
         {1}
         {2};
@@ -108,12 +111,13 @@ async def get_predios_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        target_empresa_id = current_user.id_empresa
-        role_name = current_user.rol.nombre if current_user.rol else ""
-        if role_name.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+        role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
+        if role_name and role_name.lower() in ["superadmin", "superadministrador"]:
             target_empresa_id = empresa_id
+        else:
+            target_empresa_id = current_user.id_empresa
             
-        params = {"empresa_id": target_empresa_id}
+        params = {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}
         if fecha_inicio: params["fecha_inicio"] = fecha_inicio
         if fecha_fin: params["fecha_fin"] = fecha_fin
         if fecha_historica: params["fecha_historica"] = fecha_historica
@@ -264,8 +268,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None
 
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, id_provincia, id_canton, id_ciudad)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :id_provincia, :id_canton, :id_ciudad)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad)
         RETURNING id;
     """)
     try:
@@ -274,6 +278,7 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "cod_catastral": predio.cod_catastral,
             "geojson": geojson_str,
             "empresa_id": empresa_to_use,
+            "proyecto_id": predio.proyecto_id,
             "id_provincia": id_prov,
             "id_canton": id_cant,
             "id_ciudad": id_ciud
@@ -431,9 +436,11 @@ async def get_vertices_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        target_empresa_id = current_user.id_empresa
-        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+        role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
+        if role_name and role_name.lower() in ["superadmin", "superadministrador"]:
             target_empresa_id = empresa_id
+        else:
+            target_empresa_id = current_user.id_empresa
             
         params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
@@ -485,9 +492,11 @@ async def get_lineas_geojson(
         "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
     ))
     try:
-        target_empresa_id = current_user.id_empresa
-        if current_user.role and current_user.role.lower() in ["superadmin", "superadministrador"] and empresa_id is not None:
+        role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
+        if role_name and role_name.lower() in ["superadmin", "superadministrador"]:
             target_empresa_id = empresa_id
+        else:
+            target_empresa_id = current_user.id_empresa
             
         params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
@@ -662,18 +671,28 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
 async def get_codigos_catastrales(
     fecha_inicio: Optional[str] = None,
     fecha_fin: Optional[str] = None,
+    empresa_id: Optional[int] = None,
+    proyecto_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: Usuario = Depends(get_current_user)
 ):
     """
     Obtener la lista de todos los códigos catastrales registrados, incluyendo la cédula y nombre del posesionario.
     """
+    role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
+    if role_name and role_name.lower() in ["superadmin", "superadministrador"]:
+        target_empresa_id = empresa_id
+    else:
+        target_empresa_id = current_user.id_empresa
+
     query = text("""
-        SELECT cc.codigo, cc.activo, cc.fecha_creacion, cc.posesionario_id,
+        SELECT DISTINCT cc.codigo, cc.activo, cc.fecha_creacion, cc.posesionario_id,
                pos.cedula AS cedula_posesionario, pos.nombre AS nombre_posesionario
         FROM catastro.codigo_catastral cc
         LEFT JOIN catastro.posesionario pos ON cc.posesionario_id = pos.id
-        WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id)
+        LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral
+        WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id OR p.empresa_id = :empresa_id)
+          AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id)
         {0}
         {1}
         ORDER BY cc.fecha_creacion DESC
@@ -682,7 +701,7 @@ async def get_codigos_catastrales(
         "AND cc.fecha_creacion <= :fecha_fin" if fecha_fin else ""
     ))
     try:
-        params = {"empresa_id": current_user.id_empresa}
+        params = {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}
         if fecha_inicio: params["fecha_inicio"] = fecha_inicio
         if fecha_fin: params["fecha_fin"] = fecha_fin
         rows = db.execute(query, params).mappings().all()
@@ -1248,9 +1267,20 @@ def get_vrt_path():
 VRT_FILE = get_vrt_path()
 
 @router.get("/catalog")
-def get_catalog(current_user: Usuario = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_catalog(
+    empresa_id: Optional[int] = None,
+    proyecto_id: Optional[int] = None,
+    current_user: Usuario = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
     """Devuelve los cuadros rojos del catálogo en formato GeoJSON para pintar en la web"""
     try:
+        role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
+        if role_name and role_name.lower() in ["superadmin", "superadministrador"]:
+            target_empresa_id = empresa_id
+        else:
+            target_empresa_id = current_user.id_empresa
+
         query = text("""
             SELECT 
                 id, 
@@ -1258,9 +1288,11 @@ def get_catalog(current_user: Usuario = Depends(get_current_user), db: Session =
                 ruta_completa, 
                 ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry 
             FROM catastro.ortofotos_catalogo
-            WHERE nombre_archivo != 'ortofotos.vrt' AND (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+            WHERE nombre_archivo != 'ortofotos.vrt' 
+              AND (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
+              AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id)
         """)
-        rows = db.execute(query, {"empresa_id": current_user.id_empresa}).mappings().fetchall()
+        rows = db.execute(query, {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}).mappings().fetchall()
         
         features = []
         for row in rows:

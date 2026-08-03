@@ -51,11 +51,40 @@ async def get_allowed_tools(current_user: Usuario = Depends(get_current_user)):
     # Por defecto, todos tienen acceso a estas herramientas
     allowed_tools = ["catastro2026:creardibujo"]
     
-    if role_name == "admin":
+    if role_name in ["admin", "superadmin", "superadministrador"]:
         # Admin tiene acceso a herramientas extra
         allowed_tools.extend(["catastro2026:configurarempresa", "catastro2026:gestionusuarios"])
         
     return {"tools": allowed_tools, "role": role_name}
+
+# --- CRUD de Roles ---
+
+@router.get("/roles", response_model=List[schemas.RolSchema])
+async def read_roles(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Obtener la lista de roles del sistema.
+    """
+    return db.query(Rol).all()
+
+@router.put("/roles/{id_rol}", response_model=schemas.RolSchema)
+async def update_role(id_rol: int, role_update: schemas.RolUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Actualizar permisos o descripción de un rol.
+    """
+    db_role = db.query(Rol).filter(Rol.id_rol == id_rol).first()
+    if not db_role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado")
+        
+    if role_update.nombre is not None:
+        db_role.nombre = role_update.nombre
+    if role_update.descripcion is not None:
+        db_role.descripcion = role_update.descripcion
+    if role_update.permisos is not None:
+        db_role.permisos = role_update.permisos
+        
+    db.commit()
+    db.refresh(db_role)
+    return db_role
 
 # --- CRUD de Usuarios ---
 

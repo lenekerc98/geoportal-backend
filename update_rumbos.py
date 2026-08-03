@@ -8,7 +8,7 @@ engine = create_engine(os.getenv("DATABASE_URL"))
 sql = """
 UPDATE catastro.linea_lindero
 SET rumbo = catastro.calcular_rumbo(ST_StartPoint(geom), ST_EndPoint(geom))
-WHERE rumbo IS NULL AND geom IS NOT NULL;
+WHERE geom IS NOT NULL;
 """
 
 try:

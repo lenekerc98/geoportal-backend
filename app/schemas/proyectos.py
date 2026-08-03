@@ -5,6 +5,12 @@ from datetime import datetime
 class ProyectoBase(BaseModel):
     nombre: str
     descripcion: Optional[str] = None
+    estado: Optional[str] = "Activo"
+    empresa_id: int
+    map_lat: Optional[float] = -1.5833
+    map_lng: Optional[float] = -79.4667
+    map_zoom: Optional[int] = 14
+    map_basemap: Optional[str] = "osm"
 
 class ProyectoCreate(ProyectoBase):
     pass
@@ -12,6 +18,11 @@ class ProyectoCreate(ProyectoBase):
 class ProyectoUpdate(BaseModel):
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
+    estado: Optional[str] = None
+    map_lat: Optional[float] = None
+    map_lng: Optional[float] = None
+    map_zoom: Optional[int] = None
+    map_basemap: Optional[str] = None
 
 class Proyecto(ProyectoBase):
     id: int
