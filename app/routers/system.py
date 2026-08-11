@@ -81,8 +81,8 @@ def get_system_logs(db: Session = Depends(get_db), current_user = Depends(get_cu
 @router.get("/dpa/provincias")
 def get_provincias(db: Session = Depends(get_db)):
     try:
-        provincias = db.execute(text("SELECT id, nombre FROM catastro.provincias ORDER BY nombre")).fetchall()
-        return [{"id": p[0], "nombre": p[1]} for p in provincias]
+        provincias = db.execute(text("SELECT id, codigo_dpa, nombre FROM catastro.provincias ORDER BY codigo_dpa")).fetchall()
+        return [{"id": p[0], "codigo_dpa": p[1], "nombre": p[2]} for p in provincias]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -90,10 +90,10 @@ def get_provincias(db: Session = Depends(get_db)):
 def get_cantones(provincia_id: int = None, db: Session = Depends(get_db)):
     try:
         if provincia_id:
-            cantones = db.execute(text("SELECT id, nombre FROM catastro.cantones WHERE id_provincia=:p ORDER BY nombre"), {"p": provincia_id}).fetchall()
+            cantones = db.execute(text("SELECT id, codigo_dpa, nombre FROM catastro.cantones WHERE id_provincia=:p ORDER BY codigo_dpa"), {"p": provincia_id}).fetchall()
         else:
-            cantones = db.execute(text("SELECT id, nombre FROM catastro.cantones ORDER BY nombre")).fetchall()
-        return [{"id": c[0], "nombre": c[1]} for c in cantones]
+            cantones = db.execute(text("SELECT id, codigo_dpa, nombre FROM catastro.cantones ORDER BY codigo_dpa")).fetchall()
+        return [{"id": c[0], "codigo_dpa": c[1], "nombre": c[2]} for c in cantones]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -101,9 +101,9 @@ def get_cantones(provincia_id: int = None, db: Session = Depends(get_db)):
 def get_ciudades(canton_id: int = None, db: Session = Depends(get_db)):
     try:
         if canton_id:
-            ciudades = db.execute(text("SELECT id, nombre FROM catastro.ciudades WHERE id_canton=:c ORDER BY nombre"), {"c": canton_id}).fetchall()
+            ciudades = db.execute(text("SELECT id, codigo_dpa, nombre FROM catastro.ciudades WHERE id_canton=:c ORDER BY codigo_dpa"), {"c": canton_id}).fetchall()
         else:
-            ciudades = db.execute(text("SELECT id, nombre FROM catastro.ciudades ORDER BY nombre")).fetchall()
-        return [{"id": c[0], "nombre": c[1]} for c in ciudades]
+            ciudades = db.execute(text("SELECT id, codigo_dpa, nombre FROM catastro.ciudades ORDER BY codigo_dpa")).fetchall()
+        return [{"id": c[0], "codigo_dpa": c[1], "nombre": c[2]} for c in ciudades]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

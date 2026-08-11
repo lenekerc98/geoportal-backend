@@ -1,14 +1,21 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON, Numeric
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON, Numeric, Table
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
+
+empresa_proyecto = Table(
+    'empresa_proyecto',
+    Base.metadata,
+    Column('empresa_id', Integer, ForeignKey('catastro.empresa.id', ondelete='CASCADE'), primary_key=True),
+    Column('proyecto_id', Integer, ForeignKey('catastro.proyecto.id', ondelete='CASCADE'), primary_key=True),
+    schema='catastro'
+)
 
 class Proyecto(Base):
     __tablename__ = "proyecto"
     __table_args__ = {'schema': 'catastro'}
 
     id = Column(Integer, primary_key=True, index=True)
-    empresa_id = Column(Integer, ForeignKey("catastro.empresa.id", ondelete="CASCADE"), nullable=False)
     nombre = Column(String(255), nullable=False)
     descripcion = Column(String, nullable=True)
     estado = Column(String(50), default='Activo')
@@ -18,7 +25,11 @@ class Proyecto(Base):
     map_basemap = Column(String(100), default='osm')
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
-    empresa = relationship("Empresa", back_populates="proyectos")
+    empresas = relationship("Empresa", secondary=empresa_proyecto, back_populates="proyectos")
+
+    @property
+    def empresas_ids(self):
+        return [e.id for e in self.empresas]
 
 
 class Empresa(Base):
@@ -37,6 +48,7 @@ class Empresa(Base):
     sector = Column(String(50), nullable=True)
     parametros = Column(JSON, nullable=True, default=dict)
     logo_url = Column(String(500), nullable=True)
+    bandera_url = Column(String(500), nullable=True)
     nombre_alcalde = Column(String(200), nullable=True)
     nombre_director = Column(String(200), nullable=True)
     sbu_actual = Column(Numeric(10,2), nullable=True)
@@ -45,7 +57,11 @@ class Empresa(Base):
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
     usuarios = relationship("Usuario", back_populates="empresa")
-    proyectos = relationship("Proyecto", back_populates="empresa")
+    proyectos = relationship("Proyecto", secondary=empresa_proyecto, back_populates="empresas")
+
+    @property
+    def proyectos_ids(self):
+        return [p.id for p in self.proyectos]
 
 class Rol(Base):
     __tablename__ = "roles"

@@ -46,7 +46,13 @@ def create_empresa(empresa: schemas.EmpresaCreate, db: Session = Depends(get_db)
         if existing:
             raise HTTPException(status_code=400, detail="El RUC ya está registrado para otra empresa.")
             
-    db_empresa = Empresa(**empresa.model_dump())
+    empresa_data = empresa.model_dump(exclude={'proyectos_ids'})
+    db_empresa = Empresa(**empresa_data)
+    if empresa.proyectos_ids:
+        from app.models.user import Proyecto
+        proyectos = db.query(Proyecto).filter(Proyecto.id.in_(empresa.proyectos_ids)).all()
+        db_empresa.proyectos.extend(proyectos)
+    
     db.add(db_empresa)
     db.commit()
     db.refresh(db_empresa)
@@ -74,12 +80,59 @@ def update_empresa(empresa_id: int, emp: schemas.EmpresaUpdate, db: Session = De
     if emp.sector is not None: db_empresa.sector = emp.sector
     if emp.parametros is not None: db_empresa.parametros = emp.parametros
     if emp.logo_url is not None: db_empresa.logo_url = emp.logo_url
+    if emp.bandera_url is not None: db_empresa.bandera_url = emp.bandera_url
     if emp.nombre_alcalde is not None: db_empresa.nombre_alcalde = emp.nombre_alcalde
     if emp.nombre_director is not None: db_empresa.nombre_director = emp.nombre_director
     if emp.sbu_actual is not None: db_empresa.sbu_actual = emp.sbu_actual
     if emp.valor_m2_urbano is not None: db_empresa.valor_m2_urbano = emp.valor_m2_urbano
     if emp.valor_m2_rural is not None: db_empresa.valor_m2_rural = emp.valor_m2_rural
     
+    if emp.proyectos_ids is not None:
+        from app.models.user import Proyecto
+        proyectos = db.query(Proyecto).filter(Proyecto.id.in_(emp.proyectos_ids)).all()
+        db_empresa.proyectos = proyectos
+    
+    db.commit()
+    db.refresh(db_empresa)
+    return db_empresa
+
+import os
+import shutil
+from fastapi import UploadFile, File
+
+@router.post("/{empresa_id}/upload-images", response_model=schemas.Empresa)
+def upload_empresa_images(
+    empresa_id: int, 
+    logo: UploadFile = File(None),
+    bandera: UploadFile = File(None),
+    db: Session = Depends(get_db), 
+    current_user: Usuario = Depends(get_current_user)
+):
+    is_superadmin_or_admin(current_user)
+    if current_user.rol.nombre.lower() == "admin" and current_user.id_empresa != empresa_id:
+        raise HTTPException(status_code=403, detail="No tienes permisos para editar otra empresa.")
+        
+    db_empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+    if not db_empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
+    uploads_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "empresas")
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    if logo:
+        filename = f"logo_{empresa_id}_{logo.filename}"
+        file_path = os.path.join(uploads_dir, filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(logo.file, buffer)
+        db_empresa.logo_url = f"/uploads/empresas/{filename}"
+
+    if bandera:
+        filename = f"bandera_{empresa_id}_{bandera.filename}"
+        file_path = os.path.join(uploads_dir, filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(bandera.file, buffer)
+        db_empresa.bandera_url = f"/uploads/empresas/{filename}"
+
     db.commit()
     db.refresh(db_empresa)
     return db_empresa

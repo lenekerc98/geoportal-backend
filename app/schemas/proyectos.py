@@ -6,7 +6,7 @@ class ProyectoBase(BaseModel):
     nombre: str
     descripcion: Optional[str] = None
     estado: Optional[str] = "Activo"
-    empresa_id: int
+    empresas_ids: Optional[list[int]] = []
     map_lat: Optional[float] = -1.5833
     map_lng: Optional[float] = -79.4667
     map_zoom: Optional[int] = 14

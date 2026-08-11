@@ -13,7 +13,7 @@ from app.models import Usuario, Rol
 from app import schemas
 from app.core.logger import log_audit
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
 
 router = APIRouter(tags=["Usuarios"])
 

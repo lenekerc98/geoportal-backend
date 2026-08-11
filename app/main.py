@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
@@ -70,6 +71,8 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS canton VARCHAR(100)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS ciudad VARCHAR(100)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS sector VARCHAR(50)"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS logo_url VARCHAR(500)"))
+            connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS bandera_url VARCHAR(500)"))
             connection.execute(text("ALTER TABLE catastro.empresa ADD COLUMN IF NOT EXISTS parametros JSONB DEFAULT '{}'::jsonb"))
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.posesionario (
@@ -273,3 +276,8 @@ app.include_router(empresas.router, prefix="/api")
 app.include_router(proyectos.router, prefix="/api")
 app.include_router(gis.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+
+# Mount uploads directory for static files (images, etc)
+uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uploads"))
+os.makedirs(os.path.join(uploads_dir, "empresas"), exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")

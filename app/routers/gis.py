@@ -256,13 +256,17 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     if predio.es_utm:
         geom_4326_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717), 4326)"
         
-    query_dpa = text(f"""
+    cod_prov = predio.cod_catastral[0:2] if predio.cod_catastral else None
+    cod_cant = predio.cod_catastral[0:4] if predio.cod_catastral else None
+    cod_parr = predio.cod_catastral[0:6] if predio.cod_catastral else None
+
+    query_dpa = text("""
         SELECT 
-          (SELECT id FROM catastro.provincias WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_provincia,
-          (SELECT id FROM catastro.cantones WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_canton,
-          (SELECT id FROM catastro.ciudades WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_ciudad
+          (SELECT id FROM catastro.provincias WHERE codigo_dpa = :cod_prov LIMIT 1) as id_provincia,
+          (SELECT id FROM catastro.cantones WHERE codigo_dpa = :cod_cant LIMIT 1) as id_canton,
+          (SELECT id FROM catastro.ciudades WHERE codigo_dpa = :cod_parr LIMIT 1) as id_ciudad
     """)
-    dpa_res = db.execute(query_dpa, {"geojson": geojson_str}).fetchone()
+    dpa_res = db.execute(query_dpa, {"cod_prov": cod_prov, "cod_cant": cod_cant, "cod_parr": cod_parr}).fetchone()
     id_prov = getattr(dpa_res, "id_provincia", None) if dpa_res else None
     id_cant = getattr(dpa_res, "id_canton", None) if dpa_res else None
     id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None

@@ -24,7 +24,7 @@ def is_superadmin_or_admin(user: Usuario):
 @router.get("/", response_model=List[schemas.Proyecto])
 def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     if current_user.rol.nombre.lower() == "admin":
-        return db.query(Proyecto).filter(Proyecto.empresa_id == current_user.id_empresa).all()
+        return db.query(Proyecto).filter(Proyecto.empresas.any(id=current_user.id_empresa)).all()
     return db.query(Proyecto).all()
 
 @router.post("", response_model=schemas.Proyecto)
@@ -32,10 +32,16 @@ def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depend
 def create_proyecto(proyecto: schemas.ProyectoCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     is_superadmin_or_admin(current_user)
     
-    if current_user.rol.nombre.lower() == "admin" and proyecto.empresa_id != current_user.id_empresa:
-        raise HTTPException(status_code=403, detail="No tienes permisos para crear proyectos en otra empresa.")
+    if current_user.rol.nombre.lower() == "admin" and (not proyecto.empresas_ids or current_user.id_empresa not in proyecto.empresas_ids):
+        raise HTTPException(status_code=403, detail="No tienes permisos para crear proyectos sin tu empresa.")
         
-    db_proyecto = Proyecto(**proyecto.model_dump())
+    proyecto_data = proyecto.model_dump(exclude={'empresas_ids'})
+    db_proyecto = Proyecto(**proyecto_data)
+    
+    if proyecto.empresas_ids:
+        empresas = db.query(Empresa).filter(Empresa.id.in_(proyecto.empresas_ids)).all()
+        db_proyecto.empresas.extend(empresas)
+        
     db.add(db_proyecto)
     db.commit()
     db.refresh(db_proyecto)
@@ -49,12 +55,16 @@ def update_proyecto(proyecto_id: int, proj: schemas.ProyectoUpdate, db: Session 
     if not db_proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
         
-    if current_user.rol.nombre.lower() == "admin" and db_proyecto.empresa_id != current_user.id_empresa:
+    if current_user.rol.nombre.lower() == "admin" and current_user.id_empresa not in [e.id for e in db_proyecto.empresas]:
         raise HTTPException(status_code=403, detail="No tienes permisos para editar este proyecto.")
     
-    update_data = proj.model_dump(exclude_unset=True)
+    update_data = proj.model_dump(exclude_unset=True, exclude={'empresas_ids'})
     for key, value in update_data.items():
         setattr(db_proyecto, key, value)
+        
+    if proj.empresas_ids is not None:
+        empresas = db.query(Empresa).filter(Empresa.id.in_(proj.empresas_ids)).all()
+        db_proyecto.empresas = empresas
     
     db.commit()
     db.refresh(db_proyecto)
@@ -68,7 +78,7 @@ def delete_proyecto(proyecto_id: int, db: Session = Depends(get_db), current_use
     if not db_proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
         
-    if current_user.rol.nombre.lower() == "admin" and db_proyecto.empresa_id != current_user.id_empresa:
+    if current_user.rol.nombre.lower() == "admin" and current_user.id_empresa not in [e.id for e in db_proyecto.empresas]:
         raise HTTPException(status_code=403, detail="No tienes permisos para eliminar este proyecto.")
         
     db.delete(db_proyecto)
