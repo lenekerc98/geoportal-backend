@@ -22,6 +22,7 @@ class CodigoCatastral(CodigoCatastralBase):
     fecha_creacion: Optional[Any] = None
     cedula_posesionario: Optional[str] = None
     nombre_posesionario: Optional[str] = None
+    empresa_nombre: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -205,7 +205,7 @@ def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optio
     """)
     db.execute(query_puntos, {"id": predio_id})
 
-    # Extraer líneas (linderos)
+    # Extraer líneas (linderos) con detección automática de colindantes
     query_lineas = text("""
         INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, rumbo, colindante, geom, empresa_id)
         SELECT 
@@ -213,7 +213,18 @@ def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optio
             CASE WHEN EXISTS (SELECT 1 FROM catastro.codigo_catastral cc WHERE cc.codigo = p.cod_catastral) THEN p.cod_catastral ELSE NULL END,
             ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1))),
             catastro.calcular_rumbo(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
-            '', -- Colindante inicial vacío
+            COALESCE((
+                SELECT COALESCE(pos.nombre, p2.cod_catastral, 'S/D')
+                FROM catastro.predio p2
+                LEFT JOIN catastro.posesionario pos ON p2.posesionario_id = pos.id
+                WHERE p2.id != p.id 
+                  AND ST_DWithin(
+                      ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
+                      p2.geom, 
+                      0.5
+                  )
+                LIMIT 1
+            ), ''), -- Autodetección de colindante
             ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
             p.empresa_id
         FROM catastro.predio p
@@ -345,13 +356,17 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         updates.append(f"geom = {geom_sql}")
         updates.append(f"area_ha = ST_Area({geom_sql}) / 10000.0")
         
-        query_dpa = text(f"""
+        cod_prov = predio.cod_catastral[0:2] if predio.cod_catastral else None
+        cod_cant = predio.cod_catastral[0:4] if predio.cod_catastral else None
+        cod_parr = predio.cod_catastral[0:6] if predio.cod_catastral else None
+
+        query_dpa = text("""
             SELECT 
-              (SELECT id FROM catastro.provincias WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_provincia,
-              (SELECT id FROM catastro.cantones WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_canton,
-              (SELECT id FROM catastro.ciudades WHERE ST_Intersects(ST_Centroid({geom_4326_sql}), geom) LIMIT 1) as id_ciudad
+              (SELECT id FROM catastro.provincias WHERE codigo_dpa = :cod_prov LIMIT 1) as id_provincia,
+              (SELECT id FROM catastro.cantones WHERE codigo_dpa = :cod_cant LIMIT 1) as id_canton,
+              (SELECT id FROM catastro.ciudades WHERE codigo_dpa = :cod_parr LIMIT 1) as id_ciudad
         """)
-        dpa_res = db.execute(query_dpa, {"geojson": params["geojson"]}).fetchone()
+        dpa_res = db.execute(query_dpa, {"cod_prov": cod_prov, "cod_cant": cod_cant, "cod_parr": cod_parr}).fetchone()
         if dpa_res:
             updates.append("id_provincia = :id_provincia")
             updates.append("id_canton = :id_canton")
@@ -691,10 +706,12 @@ async def get_codigos_catastrales(
 
     query = text("""
         SELECT DISTINCT cc.codigo, cc.activo, cc.fecha_creacion, cc.posesionario_id,
-               pos.cedula AS cedula_posesionario, pos.nombre AS nombre_posesionario
+               pos.cedula AS cedula_posesionario, pos.nombre AS nombre_posesionario,
+               e.nombre AS empresa_nombre
         FROM catastro.codigo_catastral cc
         LEFT JOIN catastro.posesionario pos ON cc.posesionario_id = pos.id
         LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral
+        LEFT JOIN catastro.empresa e ON COALESCE(cc.empresa_id, p.empresa_id) = e.id
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id OR p.empresa_id = :empresa_id)
           AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id)
         {0}
