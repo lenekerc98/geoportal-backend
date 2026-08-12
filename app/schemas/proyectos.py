@@ -19,6 +19,7 @@ class ProyectoUpdate(BaseModel):
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
     estado: Optional[str] = None
+    empresas_ids: Optional[list[int]] = None
     map_lat: Optional[float] = None
     map_lng: Optional[float] = None
     map_zoom: Optional[int] = None
