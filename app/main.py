@@ -108,6 +108,34 @@ with engine.connect() as connection:
             """))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE CASCADE"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS creado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS modificado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_modificacion TIMESTAMP"))
+            
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.predio_historial (
+                    id SERIAL PRIMARY KEY,
+                    predio_id INT REFERENCES catastro.predio(id) ON DELETE CASCADE,
+                    area_ha NUMERIC(14, 4),
+                    geom geometry(Polygon, 32717),
+                    modificado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL,
+                    observacion TEXT,
+                    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.tecnico (
+                    id SERIAL PRIMARY KEY,
+                    nombre VARCHAR(255) NOT NULL,
+                    cargo VARCHAR(150),
+                    registro_senescyt VARCHAR(100),
+                    empresa_id INT REFERENCES catastro.empresa(id) ON DELETE CASCADE,
+                    activo BOOLEAN DEFAULT TRUE,
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.vertice (
                     id SERIAL PRIMARY KEY,

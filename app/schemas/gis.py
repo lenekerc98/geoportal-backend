@@ -98,6 +98,39 @@ class Predio(PredioBase):
     class Config:
         from_attributes = True
 
+class TecnicoBase(BaseModel):
+    nombre: str
+    cargo: Optional[str] = None
+    registro_senescyt: Optional[str] = None
+    empresa_id: Optional[int] = None
+    activo: Optional[bool] = True
+
+class TecnicoCreate(TecnicoBase):
+    pass
+
+class Tecnico(TecnicoBase):
+    id: int
+    fecha_creacion: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
+
+class PredioHistorialBase(BaseModel):
+    predio_id: int
+    observacion: Optional[str] = None
+
+class PredioHistorialCreate(PredioHistorialBase):
+    pass
+
+class PredioHistorial(PredioHistorialBase):
+    id: int
+    area_ha: Optional[float] = None
+    modificado_por: Optional[int] = None
+    fecha_registro: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
+
 # Modelo para retornar la ficha catastral geoespacial completa de un predio
 class PredioDetalleEspacial(BaseModel):
     predio: Predio
