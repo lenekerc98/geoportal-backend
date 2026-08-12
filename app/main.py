@@ -111,6 +111,7 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS creado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS modificado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_modificacion TIMESTAMP"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS angulo_texto FLOAT DEFAULT 0.0"))
             
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.predio_historial (
