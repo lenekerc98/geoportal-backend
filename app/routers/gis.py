@@ -248,6 +248,31 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     Crear un nuevo predio ingresando la geometría en formato GeoJSON.
     """
     import json
+    
+    # Lógica de reordenamiento de polígono (P01 más al norte y sentido horario)
+    if predio.geom_geojson and predio.geom_geojson.get("type") == "Polygon":
+        coords = predio.geom_geojson.get("coordinates", [[]])[0]
+        if len(coords) > 1:
+            # Eliminar último punto si es igual al primero
+            if coords[0] == coords[-1]:
+                coords.pop()
+            # Encontrar el punto más al norte (max latitud/Y)
+            max_y_idx = max(range(len(coords)), key=lambda i: coords[i][1])
+            new_coords = coords[max_y_idx:] + coords[:max_y_idx]
+            
+            # Calcular área signada para verificar sentido horario
+            # (Si es > 0, es antihorario, por lo que revertimos)
+            def signed_area(pts):
+                pts_closed = pts + [pts[0]]
+                return sum(pts_closed[i][0] * pts_closed[i+1][1] - pts_closed[i+1][0] * pts_closed[i][1] for i in range(len(pts_closed)-1)) / 2.0
+                
+            if signed_area(new_coords) > 0:
+                # Revertir manteniendo el primero en su lugar
+                new_coords = [new_coords[0]] + new_coords[1:][::-1]
+                
+            new_coords.append(new_coords[0]) # Cerrar
+            predio.geom_geojson["coordinates"][0] = new_coords
+
     geojson_str = json.dumps(predio.geom_geojson)
     
     geom_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717)"
@@ -535,9 +560,10 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     """
     # 1. Obtener datos del predio y su geometría en formato WKT (Transformado a WGS84 para Leaflet)
     q_predio = text("""
-        SELECT id, cod_catastral, area_ha, posesionario_id, nombre_posesionario, cedula, estado, fecha_creacion, fecha_baja, predio_padre_id, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
-        FROM catastro.v_predio_completo 
-        WHERE cod_catastral = :cod_catastral
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
+        FROM catastro.predio p
+        LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
+        WHERE p.cod_catastral = :cod_catastral
     """)
     predio_row = db.execute(q_predio, {"cod_catastral": cod_catastral}).mappings().first()
     if not predio_row:
@@ -574,6 +600,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         posesionario_id=predio_row["posesionario_id"],
         nombre_posesionario=predio_row["nombre_posesionario"],
         cedula=predio_row["cedula"],
+        angulo_texto=float(predio_row["angulo_texto"]) if predio_row["angulo_texto"] is not None else 0.0,
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -615,9 +642,10 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """
     # 1. Obtener datos del predio y su geometría en formato WKT
     q_predio = text("""
-        SELECT id, cod_catastral, area_ha, posesionario_id, nombre_posesionario, cedula, ST_AsText(geom) as geom_wkt
-        FROM catastro.v_predio_completo 
-        WHERE id = :predio_id
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, ST_AsText(p.geom) as geom_wkt
+        FROM catastro.predio p
+        LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
+        WHERE p.id = :predio_id
     """)
     predio_row = db.execute(q_predio, {"predio_id": predio_id}).mappings().first()
     if not predio_row:
@@ -652,6 +680,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         posesionario_id=predio_row["posesionario_id"],
         nombre_posesionario=predio_row["nombre_posesionario"],
         cedula=predio_row["cedula"],
+        angulo_texto=float(predio_row["angulo_texto"]) if predio_row["angulo_texto"] is not None else 0.0,
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -685,6 +714,18 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         vertices=vertices_list,
         linderos=linderos_list
     )
+
+@router.put("/predios/{predio_id}/angulo", status_code=status.HTTP_200_OK)
+async def update_predio_angulo(predio_id: int, angulo_data: schemas.PredioAnguloUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Actualizar el ángulo de texto de un predio específico.
+    """
+    query = text("UPDATE catastro.predio SET angulo_texto = :angulo WHERE id = :id")
+    result = db.execute(query, {"angulo": angulo_data.angulo_texto, "id": predio_id})
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Predio no encontrado")
+    db.commit()
+    return {"message": "Ángulo actualizado exitosamente"}
 
 @router.get("/codigos-catastrales", response_model=List[schemas.CodigoCatastral])
 async def get_codigos_catastrales(

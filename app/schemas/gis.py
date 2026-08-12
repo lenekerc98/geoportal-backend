@@ -79,6 +79,9 @@ class PredioUpdate(BaseModel):
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
 
+class PredioAnguloUpdate(BaseModel):
+    angulo_texto: float
+
 class Predio(PredioBase):
     id: int
     posesionario_id: Optional[int] = None
@@ -93,6 +96,7 @@ class Predio(PredioBase):
     id_provincia: Optional[int] = None
     id_canton: Optional[int] = None
     id_ciudad: Optional[int] = None
+    angulo_texto: Optional[float] = 0.0
     geom_wkt: str  # Representación en texto: "POLYGON((x1 y1, ...))"
 
     class Config:
