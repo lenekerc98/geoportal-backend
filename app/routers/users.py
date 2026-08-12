@@ -142,7 +142,11 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
         password_hash=hashed_password,
         id_rol=user.id_rol,
         id_empresa=empresa_asignar,
-        activo=True
+        activo=True,
+        nombres=user.nombres,
+        apellidos=user.apellidos,
+        cedula=user.cedula,
+        correo=user.correo
     )
     db.add(new_user)
     
@@ -230,6 +234,15 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
                 db.execute(text(f"ALTER USER {current_username} {login_clause}"))
         except Exception:
             pass
+
+    if user_update.nombres is not None:
+        db_user.nombres = user_update.nombres
+    if user_update.apellidos is not None:
+        db_user.apellidos = user_update.apellidos
+    if user_update.cedula is not None:
+        db_user.cedula = user_update.cedula
+    if user_update.correo is not None:
+        db_user.correo = user_update.correo
 
     # Si se actualiza la empresa
     if current_user.rol and current_user.rol.nombre.lower() in ["superadministrador", "superadmin"]:

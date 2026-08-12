@@ -84,7 +84,19 @@ class Usuario(Base):
     id_rol = Column(Integer, ForeignKey("seguridad.roles.id_rol"))
     id_empresa = Column(Integer, ForeignKey("catastro.empresa.id"), nullable=True)
     activo = Column(Boolean, default=True)
+    nombres = Column(String(100), nullable=True)
+    apellidos = Column(String(100), nullable=True)
+    cedula = Column(String(20), nullable=True)
+    correo = Column(String(100), nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.datetime.utcnow)
 
     rol = relationship("Rol", back_populates="usuarios")
     empresa = relationship("Empresa", back_populates="usuarios")
+
+    @property
+    def nombres_completos(self):
+        n = self.nombres or ""
+        a = self.apellidos or ""
+        if n and a:
+            return f"{n} {a}"
+        return n or a or ""

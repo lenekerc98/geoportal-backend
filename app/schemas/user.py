@@ -24,6 +24,10 @@ class RolUpdate(BaseModel):
 
 class UsuarioBase(BaseModel):
     username: str
+    nombres: Optional[str] = None
+    apellidos: Optional[str] = None
+    cedula: Optional[str] = None
+    correo: Optional[str] = None
 
 class UsuarioCreate(UsuarioBase):
     password: str
@@ -36,6 +40,7 @@ class Usuario(UsuarioBase):
     id_empresa: Optional[int] = None
     activo: bool
     rol: Optional[RolSchema] = None
+    nombres_completos: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -46,4 +51,8 @@ class UsuarioUpdate(BaseModel):
     id_rol: Optional[int] = None
     id_empresa: Optional[int] = None
     activo: Optional[bool] = None
+    nombres: Optional[str] = None
+    apellidos: Optional[str] = None
+    cedula: Optional[str] = None
+    correo: Optional[str] = None
 
