@@ -93,7 +93,7 @@ async def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_
     """
     Obtener todos los usuarios.
     """
-    users = db.query(Usuario).offset(skip).limit(limit).all()
+    users = db.query(Usuario).order_by(Usuario.id_usuario).offset(skip).limit(limit).all()
     return users
 
 @router.get("/users/{id_usuario}", response_model=schemas.Usuario)
