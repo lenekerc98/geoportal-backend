@@ -15,7 +15,8 @@ def procesar_shapefile(
     renames: Dict[str, str],
     db: Session,
     import_type: str = "catastro_base",
-    nombre_capa: str = None
+    nombre_capa: str = None,
+    user_id: int = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -167,11 +168,12 @@ def procesar_shapefile(
                 
                 # 6.2 Insertar Predio
                 q_predio = text(f"""
-                    INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha)
+                    INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por)
                     SELECT 
                         :codigo, :pos_id, :emp_id, 
                         ST_Force2D(ST_SetSRID(geom, 32717)),
-                        ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0
+                        ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
+                        :creado_por
                     FROM {tabla_completa} WHERE id = :id_row
                     RETURNING id
                 """)
@@ -179,7 +181,8 @@ def procesar_shapefile(
                     "codigo": codigo_asignar,
                     "pos_id": posesionario_id,
                     "emp_id": empresa_id,
-                    "id_row": fila["id"]
+                    "id_row": fila['id'],
+                    "creado_por": user_id
                 }).mappings().first()
                 
                 if res_predio:

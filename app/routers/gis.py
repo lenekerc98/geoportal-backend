@@ -13,6 +13,7 @@ import psycopg2
 import logging
 import functools
 import math
+from datetime import timezone
 
 from app.core.database import get_db
 from app.routers.users import get_current_user
@@ -279,7 +280,15 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     if predio.es_utm:
         geom_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717)"
         
-    empresa_to_use = predio.empresa_id if predio.empresa_id else current_user.id_empresa
+    empresa_to_use = predio.empresa_id if predio.empresa_id else getattr(current_user, 'id_empresa', None)
+    
+    user_id = None
+    if hasattr(current_user, 'id_usuario'):
+        user_id = current_user.id_usuario
+    elif hasattr(current_user, 'id'):
+        user_id = current_user.id
+    elif isinstance(current_user, dict):
+        user_id = current_user.get('id_usuario') or current_user.get('id')
     
     query_codigo = text("""
         INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
@@ -308,8 +317,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None
 
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por)
         RETURNING id;
     """)
     try:
@@ -321,7 +330,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "proyecto_id": predio.proyecto_id,
             "id_provincia": id_prov,
             "id_canton": id_cant,
-            "id_ciudad": id_ciud
+            "id_ciudad": id_ciud,
+            "creado_por": user_id
         })
         new_id = result.scalar()
         
@@ -759,8 +769,8 @@ async def get_codigos_catastrales(
         {1}
         ORDER BY cc.fecha_creacion DESC
     """.format(
-        "AND cc.fecha_creacion >= :fecha_inicio" if fecha_inicio else "",
-        "AND cc.fecha_creacion <= :fecha_fin" if fecha_fin else ""
+        "AND DATE(cc.fecha_creacion) >= DATE(:fecha_inicio)" if fecha_inicio else "",
+        "AND DATE(cc.fecha_creacion) <= DATE(:fecha_fin)" if fecha_fin else ""
     ))
     try:
         params = {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}
@@ -772,7 +782,7 @@ async def get_codigos_catastrales(
                 codigo=r["codigo"],
                 activo=r["activo"],
                 posesionario_id=r["posesionario_id"],
-                fecha_creacion=r["fecha_creacion"],
+                fecha_creacion=r["fecha_creacion"].replace(tzinfo=timezone.utc) if r["fecha_creacion"] else None,
                 cedula_posesionario=r["cedula_posesionario"],
                 nombre_posesionario=r["nombre_posesionario"]
             ) for r in rows
@@ -1009,7 +1019,9 @@ async def import_shapefile(
         real_empresa_id = None if empresa_id == 0 else empresa_id
         
         # Llamar al servicio
-        resultados = procesar_shapefile(temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa)
+        resultados = procesar_shapefile(
+            temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa, user_id=current_user.id_usuario
+        )
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
     except Exception as e:
