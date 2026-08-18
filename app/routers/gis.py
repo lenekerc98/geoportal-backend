@@ -184,7 +184,7 @@ async def buscar_codigo(codigo: str, db: Session = Depends(get_db), current_user
         raise HTTPException(status_code=404, detail="Código Catastral no encontrado")
     return dict(result)
 
-def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optional[List[str]] = None):
+def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optional[List[str]] = None, rumbos: Optional[List[str]] = None):
     # Primero limpiar si ya existen (para updates)
     db.execute(text("DELETE FROM catastro.vertice WHERE predio_id = :id"), {"id": predio_id})
     db.execute(text("DELETE FROM catastro.linea_lindero WHERE predio_id = :id"), {"id": predio_id})
@@ -242,6 +242,16 @@ def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optio
                 db.execute(
                     text("UPDATE catastro.linea_lindero SET colindante = :col WHERE id = :lid"),
                     {"col": colindantes[idx], "lid": row.id}
+                )
+    
+    # Actualizar rumbos si se proporcionan (sobreescribe los calculados)
+    if rumbos and len(rumbos) > 0:
+        linderos_db = db.execute(text("SELECT id FROM catastro.linea_lindero WHERE predio_id = :id ORDER BY id ASC"), {"id": predio_id}).fetchall()
+        for idx, row in enumerate(linderos_db):
+            if idx < len(rumbos) and rumbos[idx]:
+                db.execute(
+                    text("UPDATE catastro.linea_lindero SET rumbo = :rum WHERE id = :lid"),
+                    {"rum": rumbos[idx], "lid": row.id}
                 )
 @router.post("/predios", status_code=status.HTTP_201_CREATED)
 async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
@@ -336,7 +346,7 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         new_id = result.scalar()
         
         # Generar linderos y vértices automáticamente
-        _generar_vertices_y_linderos(db, new_id, predio.colindantes)
+        _generar_vertices_y_linderos(db, new_id, predio.colindantes, predio.rumbos)
         
         db.commit()
         log_audit(db, "INFO", "PREDIO_CREATED", f"Predio {new_id} creado por {current_user.username}", current_user.id_usuario)
@@ -424,8 +434,8 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Predio no encontrado")
             
-        if predio.geom_geojson is not None or predio.colindantes is not None:
-            _generar_vertices_y_linderos(db, id, predio.colindantes)
+        if predio.geom_geojson is not None or predio.colindantes is not None or predio.rumbos is not None:
+            _generar_vertices_y_linderos(db, id, predio.colindantes, predio.rumbos)
             
         db.commit()
         log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {id} actualizado por {current_user.username}", current_user.id_usuario)

@@ -66,6 +66,7 @@ class PredioCreate(BaseModel):
     cod_catastral: Optional[str] = None
     es_utm: Optional[bool] = False
     colindantes: Optional[List[str]] = None
+    rumbos: Optional[List[str]] = None
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
 
@@ -76,6 +77,7 @@ class PredioUpdate(BaseModel):
     estado: Optional[str] = None
     es_utm: Optional[bool] = False
     colindantes: Optional[List[str]] = None
+    rumbos: Optional[List[str]] = None
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
 
