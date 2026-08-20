@@ -23,9 +23,14 @@ def is_superadmin_or_admin(user: Usuario):
 @router.get("", response_model=List[schemas.Proyecto])
 @router.get("/", response_model=List[schemas.Proyecto])
 def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
-    if current_user.rol.nombre.lower() == "admin":
+    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    if role_name in ["superadmin", "superadministrador"]:
+        return db.query(Proyecto).all()
+    elif role_name == "admin":
         return db.query(Proyecto).filter(Proyecto.empresas.any(id=current_user.id_empresa)).all()
-    return db.query(Proyecto).all()
+    else:
+        # Para usuarios regulares, devolver solo los proyectos que tengan asignados
+        return current_user.proyectos
 
 @router.post("", response_model=schemas.Proyecto)
 @router.post("/", response_model=schemas.Proyecto)

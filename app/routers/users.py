@@ -148,6 +148,12 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
         cedula=user.cedula,
         correo=user.correo
     )
+    
+    if user.proyectos_ids:
+        from app.models.user import Proyecto
+        proyectos = db.query(Proyecto).filter(Proyecto.id.in_(user.proyectos_ids)).all()
+        new_user.proyectos.extend(proyectos)
+
     db.add(new_user)
     
     # Sincronizar con usuarios de PostgreSQL
@@ -254,6 +260,11 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
         # por ahora, si envía id_empresa, se lo asignamos
         if "id_empresa" in user_update.model_dump(exclude_unset=True):
             db_user.id_empresa = user_update.id_empresa
+            
+    if user_update.proyectos_ids is not None:
+        from app.models.user import Proyecto
+        proyectos = db.query(Proyecto).filter(Proyecto.id.in_(user_update.proyectos_ids)).all()
+        db_user.proyectos = proyectos
         
     try:
         db.commit()

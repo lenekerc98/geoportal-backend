@@ -33,6 +33,7 @@ class UsuarioCreate(UsuarioBase):
     password: str
     id_rol: int
     id_empresa: Optional[int] = None
+    proyectos_ids: Optional[list[int]] = []
 
 class Usuario(UsuarioBase):
     id_usuario: int
@@ -41,6 +42,7 @@ class Usuario(UsuarioBase):
     activo: bool
     rol: Optional[RolSchema] = None
     nombres_completos: Optional[str] = None
+    proyectos_ids: Optional[list[int]] = []
 
     class Config:
         from_attributes = True
@@ -55,4 +57,5 @@ class UsuarioUpdate(BaseModel):
     apellidos: Optional[str] = None
     cedula: Optional[str] = None
     correo: Optional[str] = None
+    proyectos_ids: Optional[list[int]] = None
 

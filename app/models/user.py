@@ -11,6 +11,14 @@ empresa_proyecto = Table(
     schema='catastro'
 )
 
+usuario_proyecto = Table(
+    'usuario_proyecto',
+    Base.metadata,
+    Column('usuario_id', Integer, ForeignKey('seguridad.usuarios.id_usuario', ondelete='CASCADE'), primary_key=True),
+    Column('proyecto_id', Integer, ForeignKey('catastro.proyecto.id', ondelete='CASCADE'), primary_key=True),
+    schema='seguridad'
+)
+
 class Proyecto(Base):
     __tablename__ = "proyecto"
     __table_args__ = {'schema': 'catastro'}
@@ -92,6 +100,7 @@ class Usuario(Base):
 
     rol = relationship("Rol", back_populates="usuarios")
     empresa = relationship("Empresa", back_populates="usuarios")
+    proyectos = relationship("Proyecto", secondary=usuario_proyecto, backref="usuarios_asignados")
 
     @property
     def nombres_completos(self):
