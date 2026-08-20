@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
-from app.routers import auth, users, gis, system, empresas, proyectos
+from app.routers import auth, users, config, gis, system, empresas, proyectos
 from osgeo import gdal
 
 import sys
@@ -273,6 +273,26 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Catastro API 2026")
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from app.core.logger import log_audit
+from app.core.database import SessionLocal
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Atrapa cualquier error 500 no controlado y lo notifica"""
+    db = SessionLocal()
+    try:
+        log_audit(db, "ERROR", f"FALLA_INTERNA: {request.url.path}", str(exc))
+    finally:
+        db.close()
+        
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Ha ocurrido un error inesperado en el servidor. Los administradores han sido notificados."}
+    )
+
+
 # Leer orígenes permitidos desde el entorno o usar '*' por defecto
 frontend_url_env = os.getenv("FRONTEND_URL", "*")
 
@@ -299,6 +319,7 @@ def read_root():
     return {"status": "ok", "message": "Geoportal API is running!"}
 
 # Include routers
+app.include_router(config.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(empresas.router, prefix="/api")
