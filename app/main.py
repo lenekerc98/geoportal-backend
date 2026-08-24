@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.database import engine, Base
-from app.routers import auth, users, config, gis, system, empresas, proyectos
+from app.routers import auth, users, config, gis, system, empresas, proyectos, dibujo
 from osgeo import gdal
 
 import sys
@@ -122,6 +122,16 @@ with engine.connect() as connection:
                     modificado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL,
                     observacion TEXT,
                     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.capa_dibujo (
+                    id SERIAL PRIMARY KEY,
+                    tipo VARCHAR(50) NOT NULL,
+                    geom geometry(Geometry, 32717),
+                    usuario_id INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL,
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
 
@@ -326,6 +336,7 @@ app.include_router(empresas.router, prefix="/api")
 app.include_router(proyectos.router, prefix="/api")
 app.include_router(gis.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+app.include_router(dibujo.router, prefix="/api")
 
 # Mount uploads directory for static files (images, etc)
 uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uploads"))

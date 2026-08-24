@@ -3,7 +3,7 @@ from app.core.database import Base
 
 class ConfiguracionSMTP(Base):
     __tablename__ = "configuracion_smtp"
-    __table_args__ = {"schema": "catastro"}
+    __table_args__ = {"schema": "seguridad"}
 
     id = Column(Integer, primary_key=True, index=True)
     smtp_server = Column(String(255), nullable=False)

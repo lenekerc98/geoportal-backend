@@ -284,6 +284,18 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             new_coords.append(new_coords[0]) # Cerrar
             predio.geom_geojson["coordinates"][0] = new_coords
 
+    # Si llega una Polilínea (LineString), la cerramos y convertimos a Polígono
+    if predio.geom_geojson.get("type") == "LineString":
+        coords = predio.geom_geojson.get("coordinates", [])
+        if coords and len(coords) > 2:
+            if coords[0] != coords[-1]:
+                coords.append(coords[0]) # Cerrar
+            # Transformar a Polígono
+            predio.geom_geojson = {
+                "type": "Polygon",
+                "coordinates": [coords]
+            }
+
     geojson_str = json.dumps(predio.geom_geojson)
     
     geom_sql = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717)"
@@ -349,7 +361,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         _generar_vertices_y_linderos(db, new_id, predio.colindantes, predio.rumbos)
         
         db.commit()
-        log_audit(db, "INFO", "PREDIO_CREATED", f"Predio {new_id} creado por {current_user.username}", current_user.id_usuario)
+        desc_predio = f"con código catastral {predio.cod_catastral}" if predio.cod_catastral else f"{new_id}"
+        log_audit(db, "INFO", "PREDIO_CREATED", f"Predio {desc_predio} creado por {current_user.username}", current_user.id_usuario)
         return {"message": "Predio creado exitosamente", "id": new_id}
     except Exception as e:
         db.rollback()
@@ -438,7 +451,13 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             _generar_vertices_y_linderos(db, id, predio.colindantes, predio.rumbos)
             
         db.commit()
-        log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {id} actualizado por {current_user.username}", current_user.id_usuario)
+        cod_desc = predio.cod_catastral
+        if not cod_desc:
+            r = db.execute(text("SELECT cod_catastral FROM catastro.predio WHERE id = :id"), {"id": id}).fetchone()
+            if r and r[0]:
+                cod_desc = r[0]
+        desc_predio = f"con código catastral {cod_desc}" if cod_desc else f"{id}"
+        log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {desc_predio} actualizado por {current_user.username}", current_user.id_usuario)
         return {"message": "Predio actualizado exitosamente"}
     except Exception as e:
         db.rollback()
@@ -449,13 +468,16 @@ async def delete_predio(id: int, db: Session = Depends(get_db), current_user: An
     """
     Eliminar un predio lógicamente o físicamente dependiendo de la DB.
     """
+    row = db.execute(text("SELECT cod_catastral FROM catastro.predio WHERE id = :id"), {"id": id}).fetchone()
+    cod_desc = row[0] if (row and row[0]) else id
+    desc_predio = f"con código catastral {cod_desc}" if (row and row[0]) else f"{id}"
     query = text("DELETE FROM catastro.predio WHERE id = :id")
     try:
         result = db.execute(query, {"id": id})
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Predio no encontrado")
         db.commit()
-        log_audit(db, "WARNING", "PREDIO_DELETED", f"Predio {id} eliminado por {current_user.username}", current_user.id_usuario)
+        log_audit(db, "WARNING", "PREDIO_DELETED", f"Predio {desc_predio} eliminado por {current_user.username}", current_user.id_usuario)
         return {"message": "Predio eliminado exitosamente"}
     except Exception as e:
         db.rollback()
@@ -1067,33 +1089,33 @@ async def get_capas_adicionales(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/capa-adicional/{tabla_db}")
-async def get_capa_adicional_geojson(
+def get_capa_adicional_geojson(
     tabla_db: str,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Obtiene el GeoJSON de una capa adicional desde la tabla unificada.
+    Obtiene el GeoJSON optimizado de una capa adicional desde la tabla unificada.
     """
     query = """
-        SELECT jsonb_build_object(
+        SELECT json_build_object(
             'type', 'FeatureCollection',
-            'features', coalesce(jsonb_agg(
-                jsonb_build_object(
+            'features', coalesce(json_agg(
+                json_build_object(
                     'type', 'Feature',
                     'id', ea.id,
                     'geometry', ST_AsGeoJSON(ST_Transform(ea.geom, 4326))::json,
                     'properties', ea.propiedades
                 )
-            ), '[]'::jsonb)
-        )
+            ), '[]'::json)
+        )::text
         FROM catastro.elementos_adicionales ea
         JOIN catastro.capas_adicionales ca ON ea.capa_id = ca.id
         WHERE ca.tabla_db = :tabla_db;
     """
     try:
         result = db.execute(text(query), {"tabla_db": tabla_db}).scalar()
-        return result or {"type": "FeatureCollection", "features": []}
+        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo capa: {str(e)}")
 
