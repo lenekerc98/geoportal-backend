@@ -5,6 +5,9 @@ from sqlalchemy import text
 from app.core.database import get_db
 from app.routers.users import get_current_user
 from app.models.log import Log
+from app.core.logger import log_audit
+from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(
     prefix="/system",
@@ -107,3 +110,24 @@ def get_ciudades(canton_id: int = None, db: Session = Depends(get_db)):
         return [{"id": c[0], "codigo_dpa": c[1], "nombre": c[2]} for c in ciudades]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class FrontendErrorReport(BaseModel):
+    error: str
+    user: Optional[str] = "Anónimo / Sesión frontend"
+    url: Optional[str] = ""
+
+@router.post("/report-error")
+def report_frontend_error(data: FrontendErrorReport, db: Session = Depends(get_db)):
+    """
+    Recibe un error fatal del frontend, lo registra en la bitácora y envía alerta por correo SMTP.
+    """
+    descripcion = f"Falla Crítica en Frontend:\nURL: {data.url}\nUsuario: {data.user}\n\nDetalle del Error:\n{data.error}"
+    log_audit(
+        db=db,
+        tipo="CRITICAL",
+        accion="Falla Crítica Frontend",
+        descripcion=descripcion,
+        enviar_alerta=True
+    )
+    return {"status": "ok", "message": "Error reportado y alerta enviada"}
