@@ -112,6 +112,19 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS modificado_por INT REFERENCES seguridad.usuarios(id_usuario) ON DELETE SET NULL"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS fecha_modificacion TIMESTAMP"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS angulo_texto FLOAT DEFAULT 0.0"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS codigo_carta VARCHAR(50)"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS nombre_carta VARCHAR(100)"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS cuadricula_carta VARCHAR(50)"))
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS catastro.cartas_topograficas (
+                    id SERIAL PRIMARY KEY,
+                    codigo VARCHAR(50) NOT NULL,
+                    nombre VARCHAR(100) NOT NULL,
+                    cuadricula VARCHAR(50) DEFAULT 'ZONA 17S',
+                    escala VARCHAR(20) DEFAULT '1:50000',
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS catastro.predio_historial (

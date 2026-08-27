@@ -99,6 +99,9 @@ class Predio(PredioBase):
     id_canton: Optional[int] = None
     id_ciudad: Optional[int] = None
     angulo_texto: Optional[float] = 0.0
+    codigo_carta: Optional[str] = None
+    nombre_carta: Optional[str] = None
+    cuadricula_carta: Optional[str] = None
     geom_wkt: str  # Representación en texto: "POLYGON((x1 y1, ...))"
 
     class Config:
@@ -162,3 +165,44 @@ class GeoJSONFeatureCollection(BaseModel):
 
 class ProcesarOrtofotoRequest(BaseModel):
     ruta_archivo: str
+
+class PredioCartaUpdate(BaseModel):
+    codigo_carta: Optional[str] = None
+    nombre_carta: Optional[str] = None
+    cuadricula_carta: Optional[str] = None
+
+class CartaTopograficaBase(BaseModel):
+    codigo: str
+    nombre: str
+    cuadricula: Optional[str] = 'ZONA 17S'
+    escala: Optional[str] = '1:50000'
+
+class CartaTopograficaCreate(CartaTopograficaBase):
+    pass
+
+class CartaTopografica(CartaTopograficaBase):
+    id: int
+    fecha_creacion: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CapaCadArchivo(BaseModel):
+    nombre_archivo: str
+    formato_origen: str = "CAD"
+    total_elementos: int
+    capas: List[str]
+    fecha_subida: Optional[Any] = None
+
+class CapaCadItem(BaseModel):
+    id: int
+    nombre_archivo: str
+    capa_cad: str
+    tipo_geometria: Optional[str] = None
+    texto: Optional[str] = None
+    color: Optional[str] = None
+    propiedades: Optional[dict] = {}
+
+    class Config:
+        from_attributes = True

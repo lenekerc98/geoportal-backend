@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, 
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 import os
 import uuid
 import shutil
@@ -602,7 +603,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     """
     # 1. Obtener datos del predio y su geometría en formato WKT (Transformado a WGS84 para Leaflet)
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.cod_catastral = :cod_catastral
@@ -634,7 +635,30 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
     
-    # 4. Formatear datos de acuerdo al esquema Pydantic
+    # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
+    final_cod_carta = predio_row["codigo_carta"]
+    final_nom_carta = predio_row["nombre_carta"]
+    final_cuad_carta = predio_row["cuadricula_carta"]
+    
+    if not final_nom_carta:
+        try:
+            q_intersect = text("""
+                SELECT c.nombre_archivo, ct.codigo, ct.nombre, ct.cuadricula, ct.escala
+                FROM catastro.capas_cad_cartas c
+                LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
+                WHERE c.geom && (SELECT geom FROM catastro.predio WHERE id = :pid)
+                  AND ST_Intersects(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid))
+                LIMIT 1
+            """)
+            inter_row = db.execute(q_intersect, {"pid": predio_id}).mappings().first()
+            if inter_row:
+                final_cod_carta = inter_row["codigo"] or inter_row["cuadricula"] or "NIV-D3"
+                final_nom_carta = inter_row["nombre"] or inter_row["nombre_archivo"].replace('.dxf', '').upper()
+                final_cuad_carta = inter_row["cuadricula"] or final_cod_carta
+        except Exception:
+            pass
+
+    # Formatear datos de acuerdo al esquema Pydantic
     predio_data = schemas.Predio(
         id=predio_row["id"],
         cod_catastral=predio_row["cod_catastral"],
@@ -643,6 +667,9 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         nombre_posesionario=predio_row["nombre_posesionario"],
         cedula=predio_row["cedula"],
         angulo_texto=float(predio_row["angulo_texto"]) if predio_row["angulo_texto"] is not None else 0.0,
+        codigo_carta=final_cod_carta,
+        nombre_carta=final_nom_carta,
+        cuadricula_carta=final_cuad_carta,
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -684,7 +711,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """
     # 1. Obtener datos del predio y su geometría en formato WKT
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, ST_AsText(p.geom) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, ST_AsText(p.geom) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.id = :predio_id
@@ -714,7 +741,30 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
     
-    # 4. Formatear datos de acuerdo al esquema Pydantic
+    # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
+    final_cod_carta = predio_row["codigo_carta"]
+    final_nom_carta = predio_row["nombre_carta"]
+    final_cuad_carta = predio_row["cuadricula_carta"]
+    
+    if not final_nom_carta:
+        try:
+            q_intersect = text("""
+                SELECT c.nombre_archivo, ct.codigo, ct.nombre, ct.cuadricula, ct.escala
+                FROM catastro.capas_cad_cartas c
+                LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
+                WHERE c.geom && (SELECT geom FROM catastro.predio WHERE id = :pid)
+                  AND ST_Intersects(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid))
+                LIMIT 1
+            """)
+            inter_row = db.execute(q_intersect, {"pid": predio_id}).mappings().first()
+            if inter_row:
+                final_cod_carta = inter_row["codigo"] or inter_row["cuadricula"] or "NIV-D3"
+                final_nom_carta = inter_row["nombre"] or inter_row["nombre_archivo"].replace('.dxf', '').upper()
+                final_cuad_carta = inter_row["cuadricula"] or final_cod_carta
+        except Exception:
+            pass
+
+    # Formatear datos de acuerdo al esquema Pydantic
     predio_data = schemas.Predio(
         id=predio_row["id"],
         cod_catastral=predio_row["cod_catastral"],
@@ -723,6 +773,9 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         nombre_posesionario=predio_row["nombre_posesionario"],
         cedula=predio_row["cedula"],
         angulo_texto=float(predio_row["angulo_texto"]) if predio_row["angulo_texto"] is not None else 0.0,
+        codigo_carta=final_cod_carta,
+        nombre_carta=final_nom_carta,
+        cuadricula_carta=final_cuad_carta,
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -1546,3 +1599,273 @@ def get_tile(z: int, x: int, y: int, filename: str = None, db: Session = Depends
 
 
 
+
+
+@router.put("/predios/{id_o_codigo}/carta-topografica", status_code=status.HTTP_200_OK)
+async def update_predio_carta(
+    id_o_codigo: str, 
+    carta_data: schemas.PredioCartaUpdate, 
+    db: Session = Depends(get_db), 
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Actualizar el código, nombre y cuadrícula de la carta topográfica en el predio.
+    Soporta ID numérico o código catastral. También registra automáticamente la carta en el catálogo global si no existe.
+    """
+    cod_carta = (carta_data.codigo_carta or "").strip()
+    nom_carta = (carta_data.nombre_carta or "").strip()
+    cuad_carta = (carta_data.cuadricula_carta or "ZONA 17S").strip()
+
+    if id_o_codigo.isdigit():
+        query = text("""
+            UPDATE catastro.predio 
+            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula 
+            WHERE id = :id_or_cod
+        """)
+        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "id_or_cod": int(id_o_codigo)}
+    else:
+        query = text("""
+            UPDATE catastro.predio 
+            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula 
+            WHERE cod_catastral = :id_or_cod
+        """)
+        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "id_or_cod": id_o_codigo}
+    
+    result = db.execute(query, params)
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Predio no encontrado")
+        
+    # Auto-registrar en catalogo global si tiene codigo o nombre
+    if cod_carta or nom_carta:
+        try:
+            check_q = text("SELECT id FROM catastro.cartas_topograficas WHERE (codigo = :codigo AND :codigo != '') OR (nombre = :nombre AND :nombre != '')")
+            existing = db.execute(check_q, {"codigo": cod_carta or "", "nombre": nom_carta or ""}).fetchone()
+            if not existing and (cod_carta or nom_carta):
+                ins_q = text("""
+                    INSERT INTO catastro.cartas_topograficas (codigo, nombre, cuadricula)
+                    VALUES (:codigo, :nombre, :cuadricula)
+                """)
+                db.execute(ins_q, {"codigo": cod_carta or "S/C", "nombre": nom_carta or "SIN NOMBRE", "cuadricula": cuad_carta})
+        except Exception as e:
+            logging.warning(f"Error auto-registrando en cartas_topograficas: {e}")
+            
+    db.commit()
+    return {"message": "Carta topográfica actualizada exitosamente", "codigo_carta": cod_carta, "nombre_carta": nom_carta, "cuadricula_carta": cuad_carta}
+
+@router.get("/cartas-topograficas", response_model=List[schemas.CartaTopografica])
+async def get_cartas_topograficas(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Obtener el catálogo global de cartas topográficas registradas en la base de datos.
+    """
+    query = text("SELECT id, codigo, nombre, cuadricula, escala, fecha_creacion FROM catastro.cartas_topograficas ORDER BY nombre ASC, codigo ASC")
+    res = db.execute(query).mappings().all()
+    return [schemas.CartaTopografica(**dict(r)) for r in res]
+
+@router.post("/cartas-topograficas", response_model=schemas.CartaTopografica, status_code=status.HTTP_201_CREATED)
+async def create_carta_topografica(carta: schemas.CartaTopograficaCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Registrar una nueva carta topográfica en el catálogo global.
+    """
+    query = text("""
+        INSERT INTO catastro.cartas_topograficas (codigo, nombre, cuadricula, escala)
+        VALUES (:codigo, :nombre, :cuadricula, :escala)
+        RETURNING id, codigo, nombre, cuadricula, escala, fecha_creacion
+    """)
+    res = db.execute(query, {
+        "codigo": carta.codigo.strip(),
+        "nombre": carta.nombre.strip(),
+        "cuadricula": carta.cuadricula or "ZONA 17S",
+        "escala": carta.escala or "1:50000"
+    }).mappings().first()
+    db.commit()
+    return schemas.CartaTopografica(**dict(res))
+
+
+from app.services.cad_service import procesar_archivo_dxf
+
+@router.post("/import-dxf")
+def import_dxf_file(
+    file: UploadFile = File(...),
+    srid: int = Form(32717),
+    codigo: Optional[str] = Form(None),
+    nombre: Optional[str] = Form(None),
+    cuadricula: Optional[str] = Form(None),
+    escala: Optional[str] = Form("1:50000"),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Importa un archivo CAD .dxf y almacena sus entidades vectoriales clasificadas por capa en PostGIS.
+    """
+    if not file.filename.lower().endswith('.dxf'):
+        raise HTTPException(status_code=400, detail="El archivo debe tener extension .dxf")
+
+    temp_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{file.filename}")
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    try:
+        resultado = procesar_archivo_dxf(
+            temp_path,
+            nombre_archivo=file.filename,
+            db=db,
+            srid=srid,
+            codigo=codigo,
+            nombre=nombre,
+            cuadricula=cuadricula,
+            escala=escala
+        )
+        log_audit(db, "INFO", "CAD_IMPORTED", f"Archivo CAD {file.filename} importado exitosamente", current_user.id_usuario)
+        return {"message": "Archivo CAD DXF importado exitosamente", "data": resultado}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+class CartaMetadataUpdate(BaseModel):
+    nombre_archivo: str
+    codigo: Optional[str] = None
+    nombre: Optional[str] = None
+    cuadricula: Optional[str] = None
+    escala: Optional[str] = "1:50000"
+
+@router.put("/cad-archivos/metadata")
+def update_cad_metadata(
+    data: CartaMetadataUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Actualiza el nombre, codigo, cuadricula y escala de una carta topografica CAD vinculada por nombre_archivo.
+    """
+    nombre_arch = data.nombre_archivo.strip()
+    final_codigo = (data.codigo or "").strip().upper()
+    final_nombre = (data.nombre or "").strip().upper()
+    final_cuad = (data.cuadricula or "").strip().upper()
+    final_escala = (data.escala or "1:50000").strip()
+
+    db.execute(text("""
+        INSERT INTO catastro.cartas_topograficas (nombre_archivo, codigo, nombre, cuadricula, escala, fecha_creacion)
+        VALUES (:nombre_archivo, :codigo, :nombre, :cuadricula, :escala, NOW())
+        ON CONFLICT (nombre_archivo) DO UPDATE
+        SET codigo = EXCLUDED.codigo,
+            nombre = EXCLUDED.nombre,
+            cuadricula = EXCLUDED.cuadricula,
+            escala = EXCLUDED.escala;
+    """), {
+        "nombre_archivo": nombre_arch,
+        "codigo": final_codigo,
+        "nombre": final_nombre,
+        "cuadricula": final_cuad,
+        "escala": final_escala
+    })
+    db.commit()
+    log_audit(db, "UPDATE", "CARTA_METADATA_UPDATED", f"Metadatos de carta {final_nombre} actualizados", current_user.id_usuario)
+    return {"message": "Metadatos actualizados correctamente", "data": data.dict()}
+
+@router.get("/cad-archivos")
+async def get_cad_archivos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Obtiene la lista de archivos CAD importados y sus capas detectadas vinculadas exactamente por nombre_archivo.
+    """
+    query = text("""
+        SELECT 
+            c.nombre_archivo,
+            c.formato_origen,
+            COUNT(*) as total_elementos,
+            array_agg(DISTINCT c.capa_cad) as capas,
+            MAX(c.fecha_subida) as fecha_subida,
+            COALESCE(MAX(ct.codigo), '') as codigo,
+            COALESCE(MAX(ct.nombre), '') as nombre,
+            COALESCE(MAX(ct.cuadricula), '') as cuadricula,
+            COALESCE(MAX(ct.escala), '1:50000') as escala,
+            MAX(ct.id) as carta_id
+        FROM catastro.capas_cad_cartas c
+        LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
+        GROUP BY c.nombre_archivo, c.formato_origen
+        ORDER BY fecha_subida DESC
+    """)
+    rows = db.execute(query).mappings().all()
+    return [
+        {
+            "nombre_archivo": r["nombre_archivo"],
+            "formato_origen": r["formato_origen"],
+            "total_elementos": r["total_elementos"],
+            "capas": sorted(r["capas"]) if r["capas"] else [],
+            "fecha_subida": r["fecha_subida"],
+            "codigo": r["codigo"] or "",
+            "nombre": r["nombre"] or "",
+            "cuadricula": r["cuadricula"] or "",
+            "escala": r["escala"] or "1:50000",
+            "carta_id": r["carta_id"]
+        } for r in rows
+    ]
+
+@router.get("/cad-layers/geojson")
+async def get_cad_layers_geojson(
+    archivo: Optional[str] = None,
+    layers: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Obtiene el GeoJSON de las entidades CAD filtradas por archivo y/o capas visibles.
+    """
+    where_clauses = ["geom IS NOT NULL"]
+    params = {}
+
+    if archivo:
+        where_clauses.append("nombre_archivo = :archivo")
+        params["archivo"] = archivo
+
+    if layers:
+        layer_list = [l.strip().upper() for l in layers.split(",") if l.strip()]
+        if layer_list:
+            where_clauses.append("UPPER(capa_cad) = ANY(:layer_list)")
+            params["layer_list"] = layer_list
+
+    where_sql = " AND ".join(where_clauses)
+
+    query = f"""
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', coalesce(json_agg(
+                json_build_object(
+                    'type', 'Feature',
+                    'id', id,
+                    'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
+                    'properties', json_build_object(
+                        'id', id,
+                        'archivo', nombre_archivo,
+                        'capa_cad', capa_cad,
+                        'tipo_geometria', tipo_geometria,
+                        'texto', texto,
+                        'color', color,
+                        'props', propiedades
+                    )
+                )
+            ), '[]'::json)
+        )::text
+        FROM catastro.capas_cad_cartas
+        WHERE {where_sql};
+    """
+
+    try:
+        result = db.execute(text(query), params).scalar()
+        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error obteniendo GeoJSON CAD: {str(e)}")
+
+@router.delete("/cad-archivos/{nombre_archivo}")
+async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Elimina un archivo CAD y todas sus capas asociadas de la base de datos.
+    """
+    try:
+        db.execute(text("DELETE FROM catastro.capas_cad_cartas WHERE nombre_archivo = :archivo"), {"archivo": nombre_archivo})
+        db.commit()
+        return {"message": f"Archivo CAD {nombre_archivo} eliminado exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
