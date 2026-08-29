@@ -64,7 +64,7 @@ def seleccionar_archivo():
 
 from typing import Optional
 
-@router.get("/predios", response_model=schemas.GeoJSONFeatureCollection)
+@router.get("/predios")
 async def get_predios_geojson(
     fecha_inicio: Optional[str] = None,
     fecha_fin: Optional[str] = None,
@@ -75,7 +75,7 @@ async def get_predios_geojson(
     current_user: Any = Depends(get_current_user)
 ):
     """
-    Obtener todos los predios en formato GeoJSON FeatureCollection para el visor del mapa.
+    Obtener todos los predios en formato GeoJSON FeatureCollection para el visor del mapa (Direct JSON Streaming).
     """
     query = text("""
         SELECT json_build_object(
@@ -100,7 +100,7 @@ async def get_predios_geojson(
                     )
                 )
             ), '[]'::json)
-        )
+        )::text
         FROM catastro.v_predio_completo
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id)
@@ -124,8 +124,8 @@ async def get_predios_geojson(
         if fecha_fin: params["fecha_fin"] = fecha_fin
         if fecha_historica: params["fecha_historica"] = fecha_historica
         
-        result = db.execute(query, params).scalar_one_or_none()
-        return result or {"type": "FeatureCollection", "features": []}
+        result = db.execute(query, params).scalar()
+        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -484,7 +484,7 @@ async def delete_predio(id: int, db: Session = Depends(get_db), current_user: An
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error al eliminar predio: {str(e)}")
 
-@router.get("/vertices", response_model=schemas.GeoJSONFeatureCollection)
+@router.get("/vertices")
 async def get_vertices_geojson(
     fecha_historica: Optional[str] = None,
     empresa_id: Optional[int] = None,
@@ -492,7 +492,7 @@ async def get_vertices_geojson(
     current_user: Any = Depends(get_current_user)
 ):
     """
-    Obtener todos los vértices en formato GeoJSON FeatureCollection.
+    Obtener todos los vértices en formato GeoJSON FeatureCollection (Direct JSON Streaming).
     """
     query = text("""
         SELECT json_build_object(
@@ -515,7 +515,7 @@ async def get_vertices_geojson(
                     )
                 )
             ), '[]'::json)
-        )
+        )::text
         FROM catastro.vertice
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
@@ -531,15 +531,15 @@ async def get_vertices_geojson(
             
         params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
-        result = db.execute(query, params).scalar_one_or_none()
-        return result or {"type": "FeatureCollection", "features": []}
+        result = db.execute(query, params).scalar()
+        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener vértices: {str(e)}"
         )
 
-@router.get("/lineas", response_model=schemas.GeoJSONFeatureCollection)
+@router.get("/lineas")
 async def get_lineas_geojson(
     fecha_historica: Optional[str] = None,
     empresa_id: Optional[int] = None,
@@ -547,7 +547,7 @@ async def get_lineas_geojson(
     current_user: Any = Depends(get_current_user)
 ):
     """
-    Obtener todas las líneas de lindero en formato GeoJSON FeatureCollection.
+    Obtener todas las líneas de lindero en formato GeoJSON FeatureCollection (Direct JSON Streaming).
     """
     query = text("""
         SELECT json_build_object(
@@ -571,7 +571,7 @@ async def get_lineas_geojson(
                     )
                 )
             ), '[]'::json)
-        )
+        )::text
         FROM catastro.linea_lindero
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
@@ -587,8 +587,8 @@ async def get_lineas_geojson(
             
         params = {"empresa_id": target_empresa_id}
         if fecha_historica: params["fecha_historica"] = fecha_historica
-        result = db.execute(query, params).scalar_one_or_none()
-        return result or {"type": "FeatureCollection", "features": []}
+        result = db.execute(query, params).scalar()
+        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1492,7 +1492,7 @@ def tile_bounds_web_mercator(x, y, z):
     miny = origin_shift - ((y + 1) * 256.0) * res
     return minx, miny, maxx, maxy
 
-tile_semaphore = threading.Semaphore(2)
+tile_semaphore = threading.Semaphore(max(6, (os.cpu_count() or 4) * 2))
 
 @functools.lru_cache(maxsize=1024)
 def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
@@ -1551,7 +1551,7 @@ def generate_tile_bytes(z: int, x: int, y: int, source_file: str) -> bytes:
 _TILE_SOURCE_CACHE = {}
 
 @router.get("/tiles/{z}/{x}/{y}.png")
-def get_tile(z: int, x: int, y: int, filename: str = None, db: Session = Depends(get_db)):
+def get_tile(z: int, x: int, y: int, filename: str = None):
     gdal.UseExceptions()
     
     try:
@@ -1574,12 +1574,14 @@ def get_tile(z: int, x: int, y: int, filename: str = None, db: Session = Depends
                 elif base_orig:
                     source_file = get_gdal_path(base_orig, filename)
                 else:
-                    # Fallback to DB
-                    q = text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :fname")
-                    result = db.execute(q, {"fname": filename}).fetchone()
-                    if result:
-                        rc = result[0]
-                        source_file = get_gdal_path(rc) if is_s3_path(rc) else rc
+                    # Fallback to DB on demand without holding a persistent session per tile
+                    from app.core.database import SessionLocal
+                    with SessionLocal() as db_session:
+                        q = text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :fname")
+                        result = db_session.execute(q, {"fname": filename}).fetchone()
+                        if result:
+                            rc = result[0]
+                            source_file = get_gdal_path(rc) if is_s3_path(rc) else rc
                 
                 _TILE_SOURCE_CACHE[filename] = source_file
                     
@@ -1716,6 +1718,7 @@ def import_dxf_file(
             escala=escala
         )
         log_audit(db, "INFO", "CAD_IMPORTED", f"Archivo CAD {file.filename} importado exitosamente", current_user.id_usuario)
+        _CAD_GEOJSON_CACHE.clear()
         return {"message": "Archivo CAD DXF importado exitosamente", "data": resultado}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1761,6 +1764,7 @@ def update_cad_metadata(
         "escala": final_escala
     })
     db.commit()
+    _CAD_GEOJSON_CACHE.clear()
     log_audit(db, "UPDATE", "CARTA_METADATA_UPDATED", f"Metadatos de carta {final_nombre} actualizados", current_user.id_usuario)
     return {"message": "Metadatos actualizados correctamente", "data": data.dict()}
 
@@ -1802,16 +1806,27 @@ async def get_cad_archivos(db: Session = Depends(get_db), current_user: Usuario 
         } for r in rows
     ]
 
+_CAD_GEOJSON_CACHE = {}
+
 @router.get("/cad-layers/geojson")
 async def get_cad_layers_geojson(
     archivo: Optional[str] = None,
     layers: Optional[str] = None,
+    simplify: Optional[float] = 1.0,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Obtiene el GeoJSON de las entidades CAD filtradas por archivo y/o capas visibles.
+    Obtiene el GeoJSON de las entidades CAD de forma ultra-optimizada con simplificacion geometrica y cache en memoria.
     """
+    cache_key = f"{archivo}_{layers}_{simplify}"
+    if cache_key in _CAD_GEOJSON_CACHE:
+        return Response(
+            content=_CAD_GEOJSON_CACHE[cache_key],
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=1800"}
+        )
+
     where_clauses = ["geom IS NOT NULL"]
     params = {}
 
@@ -1826,6 +1841,10 @@ async def get_cad_layers_geojson(
             params["layer_list"] = layer_list
 
     where_sql = " AND ".join(where_clauses)
+    
+    geom_expr = "ST_Transform(geom, 4326)"
+    if simplify and float(simplify) > 0:
+        geom_expr = f"ST_Transform(ST_SimplifyPreserveTopology(geom, {float(simplify)}), 4326)"
 
     query = f"""
         SELECT json_build_object(
@@ -1834,15 +1853,14 @@ async def get_cad_layers_geojson(
                 json_build_object(
                     'type', 'Feature',
                     'id', id,
-                    'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
+                    'geometry', ST_AsGeoJSON({geom_expr})::json,
                     'properties', json_build_object(
                         'id', id,
                         'archivo', nombre_archivo,
                         'capa_cad', capa_cad,
                         'tipo_geometria', tipo_geometria,
                         'texto', texto,
-                        'color', color,
-                        'props', propiedades
+                        'color', color
                     )
                 )
             ), '[]'::json)
@@ -1853,18 +1871,28 @@ async def get_cad_layers_geojson(
 
     try:
         result = db.execute(text(query), params).scalar()
-        return Response(content=result or '{"type": "FeatureCollection", "features": []}', media_type="application/json")
+        content_res = result or '{"type": "FeatureCollection", "features": []}'
+        if len(_CAD_GEOJSON_CACHE) > 50:
+            _CAD_GEOJSON_CACHE.clear()
+        _CAD_GEOJSON_CACHE[cache_key] = content_res
+
+        return Response(
+            content=content_res, 
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=1800"}
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo GeoJSON CAD: {str(e)}")
 
 @router.delete("/cad-archivos/{nombre_archivo}")
 async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Elimina un archivo CAD y todas sus capas asociadas de la base de datos.
+    Elimina un archivo CAD y todas sus capas asociadas de la base de datos y purga la cache.
     """
     try:
         db.execute(text("DELETE FROM catastro.capas_cad_cartas WHERE nombre_archivo = :archivo"), {"archivo": nombre_archivo})
         db.commit()
+        _CAD_GEOJSON_CACHE.clear()
         return {"message": f"Archivo CAD {nombre_archivo} eliminado exitosamente"}
     except Exception as e:
         db.rollback()

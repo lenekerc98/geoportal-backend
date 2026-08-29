@@ -1,3 +1,4 @@
+from fastapi.middleware.gzip import GZipMiddleware
 import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -264,6 +265,30 @@ with engine.connect() as connection:
             except Exception:
                 connection.rollback()
 
+        # Performance Indexes for Fast GIS & CAD Queries
+        for idx_stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_cad_archivo_capa ON catastro.capas_cad_cartas (nombre_archivo, capa_cad)",
+            "CREATE INDEX IF NOT EXISTS idx_cad_tipo_geom ON catastro.capas_cad_cartas (tipo_geometria)",
+            "CREATE INDEX IF NOT EXISTS idx_predio_estado ON catastro.predio (estado)",
+            "CREATE INDEX IF NOT EXISTS idx_predio_fecha_baja ON catastro.predio (fecha_baja)",
+            "CREATE INDEX IF NOT EXISTS idx_predio_fecha_creacion ON catastro.predio (fecha_creacion)",
+            "CREATE INDEX IF NOT EXISTS idx_vertice_empresa_id ON catastro.vertice (empresa_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vertice_cod_catastral ON catastro.vertice (cod_catastral)",
+            "CREATE INDEX IF NOT EXISTS idx_vertice_estado ON catastro.vertice (estado)",
+            "CREATE INDEX IF NOT EXISTS idx_vertice_fecha_baja ON catastro.vertice (fecha_baja)",
+            "CREATE INDEX IF NOT EXISTS idx_linea_lindero_empresa_id ON catastro.linea_lindero (empresa_id)",
+            "CREATE INDEX IF NOT EXISTS idx_linea_lindero_cod_catastral ON catastro.linea_lindero (cod_catastral)",
+            "CREATE INDEX IF NOT EXISTS idx_linea_lindero_estado ON catastro.linea_lindero (estado)",
+            "CREATE INDEX IF NOT EXISTS idx_linea_lindero_fecha_baja ON catastro.linea_lindero (fecha_baja)",
+            "CREATE INDEX IF NOT EXISTS idx_cartas_topograficas_codigo ON catastro.cartas_topograficas (codigo)",
+            "CREATE INDEX IF NOT EXISTS idx_cartas_topograficas_nombre_archivo ON catastro.cartas_topograficas (nombre_archivo)"
+        ]:
+            try:
+                connection.execute(text(idx_stmt))
+                connection.commit()
+            except Exception:
+                connection.rollback()
+
         # Grant permissions to user roles on catastro schema
         try:
             roles_result = connection.execute(text("SELECT rolname FROM pg_roles WHERE rolcanlogin = true"))
@@ -336,6 +361,9 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+# Compresión GZIP automática para acelerar respuestas GeoJSON y JSON grandes
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 @app.get("/")
 def read_root():
