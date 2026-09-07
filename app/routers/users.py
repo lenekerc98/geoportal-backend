@@ -1,3 +1,17 @@
+def is_superadmin_user(user: Usuario):
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de Superadministrador para realizar esta acción."
+        )
+
+def is_admin_or_superadmin_user(user: Usuario):
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador", "admin", "administrador"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de Administrador para realizar esta acción."
+        )
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -69,8 +83,9 @@ async def read_roles(db: Session = Depends(get_db), current_user: Usuario = Depe
 @router.put("/roles/{id_rol}", response_model=schemas.RolSchema)
 async def update_role(id_rol: int, role_update: schemas.RolUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Actualizar permisos o descripción de un rol.
+    Actualizar permisos o descripción de un rol (solo superadmin).
     """
+    is_superadmin_user(current_user)
     db_role = db.query(Rol).filter(Rol.id_rol == id_rol).first()
     if not db_role:
         raise HTTPException(status_code=404, detail="Rol no encontrado")
@@ -109,8 +124,9 @@ async def read_user(id_usuario: int, db: Session = Depends(get_db), current_user
 @router.post("/users", response_model=schemas.Usuario, status_code=status.HTTP_201_CREATED)
 async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Crear un nuevo usuario. También crea un usuario correspondiente en PostgreSQL con permisos.
+    Crear un nuevo usuario (solo Administrador o Superadmin).
     """
+    is_admin_or_superadmin_user(current_user)
     # Validar que el nombre de usuario sea seguro para sentencias SQL
     if not re.match(r"^[a-zA-Z0-9_]+$", user.username):
         raise HTTPException(
@@ -127,6 +143,11 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
     db_role = db.query(Rol).filter(Rol.id_rol == user.id_rol).first()
     if not db_role:
         raise HTTPException(status_code=400, detail="El rol especificado no existe")
+
+    # Un administrador no puede crear Superadministradores
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    if cur_role in ["admin", "administrador"] and db_role.nombre.lower() in ["superadmin", "superadministrador"]:
+        raise HTTPException(status_code=403, detail="Un Administrador no tiene permisos para crear usuarios Superadministradores.")
         
     hashed_password = security.get_password_hash(user.password)
     
@@ -189,6 +210,30 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
     db_user = db.query(Usuario).filter(Usuario.id_usuario == id_usuario).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    is_admin = cur_role in ["admin", "administrador"]
+    is_super = cur_role in ["superadmin", "superadministrador"]
+
+    # Validación de control de acceso:
+    if current_user.id_usuario != id_usuario and not (is_admin or is_super):
+        raise HTTPException(status_code=403, detail="No tienes permisos para modificar otros usuarios.")
+
+    if is_admin and not is_super:
+        if db_user.id_empresa != current_user.id_empresa:
+            raise HTTPException(status_code=403, detail="No puedes modificar usuarios de otra empresa.")
+        if db_user.rol and db_user.rol.nombre.lower() in ["superadmin", "superadministrador"]:
+            raise HTTPException(status_code=403, detail="No puedes modificar a un Superadministrador.")
+        if user_update.id_rol is not None:
+            trg = db.query(Rol).filter(Rol.id_rol == user_update.id_rol).first()
+            if trg and trg.nombre.lower() in ["superadmin", "superadministrador"]:
+                raise HTTPException(status_code=403, detail="No puedes asignar el rol de Superadministrador.")
+
+    if not (is_admin or is_super):
+        if user_update.id_rol is not None and user_update.id_rol != db_user.id_rol:
+            raise HTTPException(status_code=403, detail="No tienes permisos para modificar tu rol.")
+        if user_update.activo is not None and user_update.activo != db_user.activo:
+            raise HTTPException(status_code=403, detail="No tienes permisos para modificar el estado activo.")
     
     old_username = db_user.username
     current_username = old_username
@@ -278,11 +323,22 @@ async def update_user(id_usuario: int, user_update: schemas.UsuarioUpdate, db: S
 @router.delete("/users/{id_usuario}", status_code=status.HTTP_200_OK)
 async def delete_user(id_usuario: int, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Eliminar un usuario y borrar su cuenta de PostgreSQL asociada.
+    Eliminar un usuario y borrar su cuenta de PostgreSQL asociada (solo Admin/Superadmin).
     """
+    is_admin_or_superadmin_user(current_user)
+    if current_user.id_usuario == id_usuario:
+        raise HTTPException(status_code=400, detail="No puedes eliminar tu propia cuenta de usuario.")
+
     db_user = db.query(Usuario).filter(Usuario.id_usuario == id_usuario).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    if cur_role in ["admin", "administrador"]:
+        if db_user.id_empresa != current_user.id_empresa:
+            raise HTTPException(status_code=403, detail="No puedes eliminar usuarios de otra empresa.")
+        if db_user.rol and db_user.rol.nombre.lower() in ["superadmin", "superadministrador"]:
+            raise HTTPException(status_code=403, detail="No puedes eliminar a un Superadministrador.")
         
     username_to_delete = db_user.username
     

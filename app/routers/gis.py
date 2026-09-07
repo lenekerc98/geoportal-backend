@@ -38,29 +38,10 @@ router = APIRouter(prefix="/gis", tags=["GIS / Datos Espaciales"])
 @router.get("/seleccionar-archivo")
 def seleccionar_archivo():
     """
-    Abre una ventana de diálogo nativa de Windows para seleccionar un archivo.
-    ATENCIÓN: Esto solo funciona si el backend corre localmente (modo 'local').
-    En la nube (Render/Linux) esto causaría un error o simplemente no funcionaría.
+    Función deprecada por motivos de seguridad en servidores web.
+    Utilice la carga de archivos drag-and-drop o selección estándar HTTP.
     """
-    import tkinter as tk
-    from tkinter import filedialog
-    
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        file_path = filedialog.askopenfilename(
-            title="Selecciona la ortofoto (.tif, .ecw, .jp2)",
-            filetypes=[("Archivos Raster", "*.tif *.tiff *.ecw *.jp2"), ("Todos los archivos", "*.*")]
-        )
-        root.destroy()
-        
-        if not file_path:
-            raise HTTPException(status_code=400, detail="No se seleccionó ningún archivo")
-            
-        return {"ruta": file_path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo abrir el selector: {str(e)}")
+    raise HTTPException(status_code=400, detail="El selector local ha sido deprecado por seguridad. Utilice la carga web estándar.")
 
 from typing import Optional
 
@@ -467,9 +448,17 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
 @router.delete("/predios/{id}")
 async def delete_predio(id: int, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
-    Eliminar un predio lógicamente o físicamente dependiendo de la DB.
+    Eliminar un predio verificando aislamiento por empresa (Anti-BOLA).
     """
-    row = db.execute(text("SELECT cod_catastral FROM catastro.predio WHERE id = :id"), {"id": id}).fetchone()
+    row = db.execute(text("SELECT cod_catastral, empresa_id FROM catastro.predio WHERE id = :id"), {"id": id}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Predio no encontrado")
+
+    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    if role_name not in ["superadmin", "superadministrador"]:
+        if current_user.id_empresa is None or row.empresa_id != current_user.id_empresa:
+            raise HTTPException(status_code=403, detail="No tienes permisos para eliminar predios de otra empresa.")
+
     cod_desc = row[0] if (row and row[0]) else id
     desc_predio = f"con código catastral {cod_desc}" if (row and row[0]) else f"{id}"
     query = text("DELETE FROM catastro.predio WHERE id = :id")
@@ -943,15 +932,20 @@ async def create_codigo_catastral(payload: schemas.CodigoCatastralBase, db: Sess
 @router.delete("/codigos-catastrales/{codigo}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_codigo_catastral(codigo: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Eliminar un código catastral (se eliminarán en cascada los predios, linderos y vértices asociados).
+    Eliminar un código catastral verificando aislamiento de empresa (Anti-BOLA).
     """
-    q_check = text("SELECT codigo FROM catastro.codigo_catastral WHERE codigo = :codigo")
-    exists = db.execute(q_check, {"codigo": codigo}).scalar()
-    if not exists:
+    q_check = text("SELECT codigo, empresa_id FROM catastro.codigo_catastral WHERE codigo = :codigo")
+    row = db.execute(q_check, {"codigo": codigo}).fetchone()
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"El código catastral '{codigo}' no existe"
         )
+
+    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    if role_name not in ["superadmin", "superadministrador"]:
+        if current_user.id_empresa is None or row.empresa_id != current_user.id_empresa:
+            raise HTTPException(status_code=403, detail="No tienes permisos para eliminar códigos catastrales de otra empresa.")
     
     q_delete = text("DELETE FROM catastro.codigo_catastral WHERE codigo = :codigo")
     try:
@@ -976,7 +970,7 @@ def _run_gdal_thread(task_id: str, ruta_absoluta: str, dpa_data: dict):
         db.close()
 
 @router.post("/ortofotos/procesar", status_code=status.HTTP_202_ACCEPTED)
-async def procesar_ortofoto(request: Request):
+async def procesar_ortofoto(request: Request, current_user: Usuario = Depends(get_current_user)):
     """
     Endpoint para procesar una ortofoto y generar sus pirámides en segundo plano.
     Espera un JSON de la forma: {"nombre_archivo": "...", "id_provincia": 1, ...}
@@ -1043,7 +1037,7 @@ def obtener_progreso(task_id: str):
     return {"progreso": progreso, "estado": estado}
 
 @router.get("/s3/list")
-def list_s3_files(db: Session = Depends(get_db)):
+def list_s3_files(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """Lista las ortofotos en S3 y marca cuáles están procesadas."""
     try:
         from app.core.file_utils import list_ortofotos
@@ -1178,6 +1172,15 @@ async def delete_capa_adicional(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
+    row = db.execute(text("SELECT id, empresa_id FROM catastro.capas_adicionales WHERE tabla_db = :tabla_db"), {"tabla_db": tabla_db}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Capa no encontrada")
+
+    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    if role_name not in ["superadmin", "superadministrador"]:
+        if current_user.id_empresa is None or row.empresa_id != current_user.id_empresa:
+            raise HTTPException(status_code=403, detail="No tienes permisos para eliminar capas de otra empresa.")
+
     try:
         db.execute(
             text("DELETE FROM catastro.capas_adicionales WHERE tabla_db = :tabla_db"),
@@ -1193,20 +1196,21 @@ async def delete_capa_adicional(
 async def upload_file_drag_drop(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Endpoint universal para recibir archivos arrastrados (Drag & Drop).
-    Detecta si es Raster (Ortofoto) o Vector (Shapefile Zip / GeoJSON) y lo procesa.
+    Endpoint universal para recibir archivos arrastrados (Drag & Drop) protegido por JWT.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No se envió ningún archivo")
 
-    temp_path = os.path.join(UPLOAD_TEMP_DIR, file.filename)
+    clean_filename = os.path.basename(file.filename)
+    temp_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{clean_filename}")
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    ext = file.filename.split('.')[-1].lower()
+    ext = clean_filename.split('.')[-1].lower()
 
     # 1. ES ORTOFOTO
     if ext in ['tif', 'tiff', 'ecw', 'jp2']:
@@ -1228,6 +1232,11 @@ async def upload_file_drag_drop(
                 extract_dir = os.path.join(UPLOAD_TEMP_DIR, str(uuid.uuid4()))
                 os.makedirs(extract_dir, exist_ok=True)
                 with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                    base_extract_abs = os.path.abspath(extract_dir)
+                    for member in zip_ref.namelist():
+                        dest = os.path.abspath(os.path.join(base_extract_abs, member))
+                        if not dest.startswith(base_extract_abs + os.sep) and dest != base_extract_abs:
+                            raise HTTPException(status_code=400, detail="Archivo ZIP malformado o inseguro (Zip Slip detectado)")
                     zip_ref.extractall(extract_dir)
                 
                 # Buscar el .shp
@@ -1887,8 +1896,11 @@ async def get_cad_layers_geojson(
 @router.delete("/cad-archivos/{nombre_archivo}")
 async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Elimina un archivo CAD y todas sus capas asociadas de la base de datos y purga la cache.
+    Elimina un archivo CAD y todas sus capas asociadas (requiere Administrador o Superadmin).
     """
+    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    if role_name not in ["superadmin", "superadministrador", "admin", "administrador"]:
+        raise HTTPException(status_code=403, detail="Se requiere rol de Administrador para eliminar archivos CAD.")
     try:
         db.execute(text("DELETE FROM catastro.capas_cad_cartas WHERE nombre_archivo = :archivo"), {"archivo": nombre_archivo})
         db.commit()

@@ -59,8 +59,10 @@ def health_check(db: Session = Depends(get_db)):
 @router.get("/logs")
 def get_system_logs(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
-    Retorna todos los logs del sistema, ordenados desde el más reciente.
+    Retorna todos los logs del sistema (requiere Administrador o Superadmin).
     """
+    if not current_user.rol or current_user.rol.nombre.lower() not in ["superadmin", "superadministrador", "admin", "administrador"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso denegado: se requiere rol de Administrador")
     try:
         # Obtener logs junto con el nombre del usuario si existe
         logs = db.query(Log).order_by(Log.fecha.desc()).limit(500).all()
@@ -117,17 +119,31 @@ class FrontendErrorReport(BaseModel):
     user: Optional[str] = "Anónimo / Sesión frontend"
     url: Optional[str] = ""
 
+import time
+_LAST_FRONTEND_ALERT = 0
+
 @router.post("/report-error")
 def report_frontend_error(data: FrontendErrorReport, db: Session = Depends(get_db)):
     """
-    Recibe un error fatal del frontend, lo registra en la bitácora y envía alerta por correo SMTP.
+    Recibe un error fatal del frontend, lo registra en la bitácora y envía alerta por correo SMTP con rate-limiting.
     """
-    descripcion = f"Falla Crítica en Frontend:\nURL: {data.url}\nUsuario: {data.user}\n\nDetalle del Error:\n{data.error}"
+    global _LAST_FRONTEND_ALERT
+    now = time.time()
+    # Limitar envío de correos a máximo 1 cada 2 minutos para evitar saturación SMTP
+    debe_enviar_alerta = (now - _LAST_FRONTEND_ALERT) > 120
+    if debe_enviar_alerta:
+        _LAST_FRONTEND_ALERT = now
+
+    url_safe = str(data.url or '')[:255]
+    user_safe = str(data.user or '')[:100]
+    error_safe = str(data.error or '')[:1500]
+
+    descripcion = f"Falla Crítica en Frontend:\nURL: {url_safe}\nUsuario: {user_safe}\n\nDetalle del Error:\n{error_safe}"
     log_audit(
         db=db,
         tipo="CRITICAL",
         accion="Falla Crítica Frontend",
         descripcion=descripcion,
-        enviar_alerta=True
+        enviar_alerta=debe_enviar_alerta
     )
-    return {"status": "ok", "message": "Error reportado y alerta enviada"}
+    return {"status": "ok", "message": "Error reportado"}

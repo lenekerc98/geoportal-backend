@@ -119,15 +119,24 @@ def upload_empresa_images(
     uploads_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "empresas")
     os.makedirs(uploads_dir, exist_ok=True)
 
-    if logo:
-        filename = f"logo_{empresa_id}_{logo.filename}"
+    import uuid
+    ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+    if logo and logo.filename:
+        logo_ext = os.path.splitext(logo.filename)[1].lower()
+        if logo_ext not in ALLOWED_EXTS:
+            raise HTTPException(status_code=400, detail=f"Extensión de logo no permitida ({logo_ext}). Solo: {', '.join(ALLOWED_EXTS)}")
+        filename = f"logo_{empresa_id}_{uuid.uuid4().hex[:12]}{logo_ext}"
         file_path = os.path.join(uploads_dir, filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(logo.file, buffer)
         db_empresa.logo_url = f"/uploads/empresas/{filename}"
 
-    if bandera:
-        filename = f"bandera_{empresa_id}_{bandera.filename}"
+    if bandera and bandera.filename:
+        bandera_ext = os.path.splitext(bandera.filename)[1].lower()
+        if bandera_ext not in ALLOWED_EXTS:
+            raise HTTPException(status_code=400, detail=f"Extensión de bandera no permitida ({bandera_ext}). Solo: {', '.join(ALLOWED_EXTS)}")
+        filename = f"bandera_{empresa_id}_{uuid.uuid4().hex[:12]}{bandera_ext}"
         file_path = os.path.join(uploads_dir, filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(bandera.file, buffer)

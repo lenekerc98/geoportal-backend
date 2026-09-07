@@ -7,13 +7,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import secrets
-# Generate a new random secret key every time the backend starts.
-# This forces all existing frontend sessions to invalidate (401 Unauthorized) 
-# and log out the user whenever the backend is restarted or modified.
-SECRET_KEY = secrets.token_hex(32)
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    # Clave persistente para desarrollo local
+    SECRET_KEY = "dev_secret_key_catastro_2026_change_in_production"
+    import warnings
+    warnings.warn("SECRET_KEY no configurada en .env. Se está usando una clave fija de desarrollo.")
+
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:

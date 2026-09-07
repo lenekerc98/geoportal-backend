@@ -26,8 +26,13 @@ def procesar_shapefile(
     os.makedirs(temp_dir, exist_ok=True)
     
     try:
-        # 1. Extraer ZIP
+        # 1. Extraer ZIP con protección Zip Slip
         with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            base_dir_abs = os.path.abspath(temp_dir)
+            for member in zip_ref.namelist():
+                dest_path = os.path.abspath(os.path.join(base_dir_abs, member))
+                if not dest_path.startswith(base_dir_abs + os.sep) and dest_path != base_dir_abs:
+                    raise ValueError(f"Extracción insegura cancelada (Zip Slip): {member}")
             zip_ref.extractall(temp_dir)
             
         # 2. Buscar archivo .shp
@@ -70,9 +75,15 @@ def procesar_shapefile(
         if result.returncode != 0:
             raise ValueError(f"Error en ogr2ogr: {result.stderr}")
             
-        # 3.5 Renombrar columnas si se solicita
-        for old_col, new_col in renames.items():
+        import re
+        SAFE_IDENT = re.compile(r"^[a-zA-Z0-9_]+$")
+
+        # 3.5 Renombrar columnas con validación estricta de identificadores
+        for old_col, new_col in list(renames.items()):
             if old_col and new_col and old_col != new_col:
+                if not SAFE_IDENT.match(str(old_col)) or not SAFE_IDENT.match(str(new_col)):
+                    logging.warning(f"Columna descartada por contener caracteres sospechosos: {old_col} -> {new_col}")
+                    continue
                 try:
                     db.execute(text(f'ALTER TABLE {tabla_completa} RENAME COLUMN "{old_col}" TO "{new_col}"'))
                     # Actualizar el mapping para que apunte al nuevo nombre
@@ -89,6 +100,10 @@ def procesar_shapefile(
         col_cedula = mapping.get("cedula")
         col_nombre = mapping.get("nombre_posesionario")
         col_codigo = mapping.get("cod_catastral")
+
+        if col_cedula and not SAFE_IDENT.match(str(col_cedula)): col_cedula = None
+        if col_nombre and not SAFE_IDENT.match(str(col_nombre)): col_nombre = None
+        if col_codigo and not SAFE_IDENT.match(str(col_codigo)): col_codigo = None
         
         resultados = {
             "tabla_cruda": tabla_completa,

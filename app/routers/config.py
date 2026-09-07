@@ -15,7 +15,9 @@ def get_fernet():
 
 @router.get("/smtp", response_model=ConfiguracionSMTPResponse)
 def get_smtp_config(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    # Solo superadmin debería poder ver esto
+    # Solo superadmin puede ver la configuración SMTP
+    if not current_user.rol or current_user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Se requiere rol de Superadministrador")
     config = db.query(ConfiguracionSMTP).first()
     if not config:
         raise HTTPException(status_code=404, detail="Configuración SMTP no encontrada")
@@ -23,6 +25,8 @@ def get_smtp_config(db: Session = Depends(get_db), current_user=Depends(get_curr
 
 @router.put("/smtp", response_model=ConfiguracionSMTPResponse)
 def update_smtp_config(data: ConfiguracionSMTPUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    if not current_user.rol or current_user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Se requiere rol de Superadministrador")
     config = db.query(ConfiguracionSMTP).first()
     f = get_fernet()
     

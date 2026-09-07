@@ -341,26 +341,41 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Leer orígenes permitidos desde el entorno o usar '*' por defecto
+# Configuración segura de orígenes CORS
 frontend_url_env = os.getenv("FRONTEND_URL", "*")
+default_allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
 
 if frontend_url_env == "*":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=".*",
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # En desarrollo local permitir puertos locales estándar
+    origins = default_allowed_origins
 else:
-    origins = [url.strip() for url in frontend_url_env.split(",")]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    origins = [url.strip() for url in frontend_url_env.split(",") if url.strip()]
+    for o in default_allowed_origins:
+        if o not in origins:
+            origins.append(o)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Middleware de Cabeceras HTTP de Seguridad
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    return response
 
 # Compresión GZIP automática para acelerar respuestas GeoJSON y JSON grandes
 app.add_middleware(GZipMiddleware, minimum_size=1000)
