@@ -1089,7 +1089,8 @@ async def import_shapefile(
         raise HTTPException(status_code=400, detail="Los parámetros mapping y renames deben ser JSON válidos.")
         
     # Guardar ZIP temporal
-    temp_zip_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{file.filename}")
+    safe_filename = os.path.basename(file.filename)
+    temp_zip_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{safe_filename}")
     with open(temp_zip_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
@@ -1103,6 +1104,8 @@ async def import_shapefile(
         )
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -1711,14 +1714,15 @@ def import_dxf_file(
     if not file.filename.lower().endswith('.dxf'):
         raise HTTPException(status_code=400, detail="El archivo debe tener extension .dxf")
 
-    temp_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{file.filename}")
+    safe_filename = os.path.basename(file.filename)
+    temp_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{safe_filename}")
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     try:
         resultado = procesar_archivo_dxf(
             temp_path,
-            nombre_archivo=file.filename,
+            nombre_archivo=safe_filename,
             db=db,
             srid=srid,
             codigo=codigo,
@@ -1726,9 +1730,11 @@ def import_dxf_file(
             cuadricula=cuadricula,
             escala=escala
         )
-        log_audit(db, "INFO", "CAD_IMPORTED", f"Archivo CAD {file.filename} importado exitosamente", current_user.id_usuario)
+        log_audit(db, "INFO", "CAD_IMPORTED", f"Archivo CAD {safe_filename} importado exitosamente", current_user.id_usuario)
         _CAD_GEOJSON_CACHE.clear()
         return {"message": "Archivo CAD DXF importado exitosamente", "data": resultado}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:

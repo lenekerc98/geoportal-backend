@@ -364,7 +364,11 @@ def procesar_archivo_dxf(
     nombre_archivo: str,
     db: Session,
     srid: int = 32717,
-    empresa_id: int = None
+    empresa_id: int = None,
+    codigo: str = None,
+    nombre: str = None,
+    cuadricula: str = None,
+    escala: str = "1:50000"
 ) -> Dict[str, Any]:
     """
     Procesa un archivo DXF de AutoCAD interpretando las entidades lineales y poligonales

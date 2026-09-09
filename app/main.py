@@ -345,23 +345,31 @@ async def global_exception_handler(request: Request, exc: Exception):
 frontend_url_env = os.getenv("FRONTEND_URL", "*")
 default_allowed_origins = [
     "http://localhost:5173",
+    "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://127.0.0.1:5173",
     "http://localhost:3000",
-    "http://127.0.0.1:3000"
+    "https://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://127.0.0.1:3000",
+    "http://localhost:8000",
+    "https://localhost:8000"
 ]
 
 if frontend_url_env == "*":
-    # En desarrollo local permitir puertos locales estándar
     origins = default_allowed_origins
+    origin_regex = r"https?://.*"
 else:
     origins = [url.strip() for url in frontend_url_env.split(",") if url.strip()]
     for o in default_allowed_origins:
         if o not in origins:
             origins.append(o)
+    origin_regex = None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

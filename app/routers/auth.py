@@ -32,12 +32,20 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
         raise HTTPException(status_code=400, detail="Usuario inactivo")
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    # Obtener el nombre del rol para incluirlo en el token
+    # Obtener el nombre del rol y permisos para incluirlos en el token
     role_name = user.rol.nombre if user.rol else "user"
+    user_permisos = user.rol.permisos if (user.rol and user.rol.permisos) else {}
 
     default_center = user.empresa.parametros.get("defaultCenter") if user.empresa and user.empresa.parametros else None
     access_token = security.create_access_token(
-        data={"sub": user.username, "role": role_name, "empresa_id": user.id_empresa, "defaultCenter": default_center}, expires_delta=access_token_expires
+        data={
+            "sub": user.username,
+            "role": role_name,
+            "empresa_id": user.id_empresa,
+            "defaultCenter": default_center,
+            "permisos": user_permisos
+        },
+        expires_delta=access_token_expires
     )
     
     log_audit(db, "INFO", "LOGIN_SUCCESS", f"Sesión iniciada exitosamente por {form_data.username}.")

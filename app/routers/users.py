@@ -1,17 +1,3 @@
-def is_superadmin_user(user: Usuario):
-    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Se requiere rol de Superadministrador para realizar esta acción."
-        )
-
-def is_admin_or_superadmin_user(user: Usuario):
-    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador", "admin", "administrador"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Se requiere rol de Administrador para realizar esta acción."
-        )
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -26,6 +12,22 @@ from app.core import security
 from app.models import Usuario, Rol
 from app import schemas
 from app.core.logger import log_audit
+
+
+def is_superadmin_user(user: Usuario):
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de Superadministrador para realizar esta acción."
+        )
+
+def is_admin_or_superadmin_user(user: Usuario):
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador", "admin", "administrador"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de Administrador para realizar esta acción."
+        )
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
 
@@ -132,6 +134,13 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
         raise HTTPException(
             status_code=400,
             detail="El nombre de usuario solo puede contener letras, números y guiones bajos (sin espacios ni caracteres especiales)"
+        )
+
+    # Validar seguridad mínima de contraseña
+    if not user.password or len(user.password.strip()) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña no puede estar vacía y debe tener al menos 6 caracteres."
         )
 
     # Verificar si el usuario ya existe en la base de datos de la app

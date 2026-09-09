@@ -47,6 +47,15 @@ def procesar_shapefile(
                 
         if not shp_file:
             raise ValueError("No se encontró ningún archivo .shp en el ZIP")
+
+        base_shp = os.path.splitext(shp_file)[0]
+        missing_parts = []
+        if not (os.path.exists(base_shp + ".dbf") or os.path.exists(base_shp + ".DBF")):
+            missing_parts.append(".dbf")
+        if not (os.path.exists(base_shp + ".shx") or os.path.exists(base_shp + ".SHX")):
+            missing_parts.append(".shx")
+        if missing_parts:
+            raise ValueError(f"El shapefile está incompleto. Faltan los componentes obligatorios: {', '.join(missing_parts)}")
             
         # 3. Importar a PostGIS usando ogr2ogr
         tabla_raw = f"shape_{uuid.uuid4().hex[:8]}"
