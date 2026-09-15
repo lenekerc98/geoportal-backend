@@ -70,6 +70,7 @@ async def get_predios_geojson(
                         'cod_catastral', cod_catastral,
                         'id', id,
                         'posesionario_id', posesionario_id,
+                        'empresa_id', empresa_id,
                         'area_ha', area_ha,
                         'cedula', cedula,
                         'nombre_posesionario', nombre_posesionario,
@@ -91,7 +92,7 @@ async def get_predios_geojson(
     """.format(
         "AND fecha_creacion >= :fecha_inicio" if fecha_inicio else "",
         "AND fecha_creacion <= :fecha_fin" if fecha_fin else "",
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -509,7 +510,7 @@ async def get_vertices_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -565,7 +566,7 @@ async def get_lineas_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND fecha_baja IS NULL"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -1915,3 +1916,161 @@ async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db),
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class FraccionarRequest(BaseModel):
+    matrizId: int
+    lote1: dict
+    lote2: dict
+
+@router.post("/predios/fraccionar")
+async def fraccionar_predio(
+    req: FraccionarRequest,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Fraccionamiento catastral atómico:
+    1. El lote matriz se mantiene vigente con su geometría general hasta fin de año (fecha_baja = 'YYYY-12-31').
+    2. Se crea el Lote 1 (remanente con nueva geometría) con vigencia a partir del siguiente año fiscal ('YYYY+1-01-01').
+    3. Se crea el Lote 2 (fracción desmembrada) con vigencia a partir del siguiente año fiscal ('YYYY+1-01-01').
+    """
+    from datetime import datetime
+    import json
+    curr_year = datetime.now().year
+    end_curr_year = f"{curr_year}-12-31"
+    next_fiscal_year = f"{curr_year + 1}-01-01"
+
+    # 1. Verificar lote matriz
+    matriz = db.execute(text("SELECT * FROM catastro.predio WHERE id = :id"), {"id": req.matrizId}).mappings().first()
+    if not matriz:
+        raise HTTPException(status_code=404, detail="Predio matriz no encontrado")
+
+    user_id = getattr(current_user, 'id_usuario', None) or getattr(current_user, 'id', None)
+    empresa_to_use = req.lote2.get("empresa_id") or matriz.get("empresa_id") or getattr(current_user, 'id_empresa', None)
+    proyecto_to_use = req.lote2.get("proyecto_id") or matriz.get("proyecto_id")
+
+    try:
+        # Guardar geometría matriz en historial
+        db.execute(text("""
+            INSERT INTO catastro.predio_historial (predio_id, area_ha, geom, modificado_por, observacion)
+            SELECT id, area_ha, geom, :uid, 'Geometría previa a fraccionamiento catastral'
+            FROM catastro.predio WHERE id = :id
+        """), {"uid": user_id, "id": req.matrizId})
+
+        # Dar de baja al predio matriz al final del año fiscal
+        db.execute(text("""
+            UPDATE catastro.predio 
+            SET fecha_baja = :fb, estado = 'Activo'
+            WHERE id = :id
+        """), {"fb": end_curr_year, "id": req.matrizId})
+
+        # Posesionario para Lote 2
+        lote2_pos_id = req.lote2.get("posesionario_id")
+        if not lote2_pos_id and req.lote2.get("cedula") and req.lote2.get("nombre"):
+            # Buscar o crear posesionario
+            pos_row = db.execute(text("SELECT id FROM catastro.posesionario WHERE cedula = :c"), {"c": req.lote2["cedula"].strip()}).fetchone()
+            if pos_row:
+                lote2_pos_id = pos_row[0]
+            else:
+                ins_pos = db.execute(text("""
+                    INSERT INTO catastro.posesionario (cedula, nombre, empresa_id)
+                    VALUES (:c, :n, :e) RETURNING id
+                """), {"c": req.lote2["cedula"].strip(), "n": req.lote2["nombre"].strip(), "e": empresa_to_use}).fetchone()
+                lote2_pos_id = ins_pos[0]
+
+        # Inserción Lote 1 (Remanente con nueva geometría a partir del próximo año)
+        l1_geom_str = json.dumps(req.lote1["geometry"])
+        l1_cod = req.lote1["cod_catastral"].strip()
+        db.execute(text("""
+            INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
+            VALUES (:c, :p, :e, true) ON CONFLICT (codigo) DO NOTHING
+        """), {"c": l1_cod, "p": matriz.get("posesionario_id"), "e": empresa_to_use})
+
+        ins_l1 = db.execute(text("""
+            INSERT INTO catastro.predio (
+                posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id,
+                id_provincia, id_canton, id_ciudad, creado_por, predio_padre_id, fecha_creacion, estado
+            )
+            VALUES (
+                :posesionario_id, :cod_catastral, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326), 32717),
+                :area_ha, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por,
+                :predio_padre_id, :fecha_creacion, 'Activo'
+            ) RETURNING id
+        """), {
+            "posesionario_id": matriz.get("posesionario_id"),
+            "cod_catastral": l1_cod,
+            "geom": l1_geom_str,
+            "area_ha": req.lote1.get("area_ha") or 0.0,
+            "empresa_id": empresa_to_use,
+            "proyecto_id": proyecto_to_use,
+            "id_provincia": matriz.get("id_provincia"),
+            "id_canton": matriz.get("id_canton"),
+            "id_ciudad": matriz.get("id_ciudad"),
+            "creado_por": user_id,
+            "predio_padre_id": req.matrizId,
+            "fecha_creacion": next_fiscal_year
+        })
+        lote1_id = ins_l1.scalar()
+        _generar_vertices_y_linderos(db, lote1_id)
+
+        # Inserción Lote 2 (Fracción desmembrada a partir del próximo año)
+        l2_geom_str = json.dumps(req.lote2["geometry"])
+        l2_cod = req.lote2["cod_catastral"].strip()
+        db.execute(text("""
+            INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
+            VALUES (:c, :p, :e, true) ON CONFLICT (codigo) DO NOTHING
+        """), {"c": l2_cod, "p": lote2_pos_id, "e": empresa_to_use})
+
+        ins_l2 = db.execute(text("""
+            INSERT INTO catastro.predio (
+                posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id,
+                id_provincia, id_canton, id_ciudad, creado_por, predio_padre_id, fecha_creacion, estado
+            )
+            VALUES (
+                :posesionario_id, :cod_catastral, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geom), 4326), 32717),
+                :area_ha, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por,
+                :predio_padre_id, :fecha_creacion, 'Activo'
+            ) RETURNING id
+        """), {
+            "posesionario_id": lote2_pos_id,
+            "cod_catastral": l2_cod,
+            "geom": l2_geom_str,
+            "area_ha": req.lote2.get("area_ha") or 0.0,
+            "empresa_id": empresa_to_use,
+            "proyecto_id": proyecto_to_use,
+            "id_provincia": matriz.get("id_provincia"),
+            "id_canton": matriz.get("id_canton"),
+            "id_ciudad": matriz.get("id_ciudad"),
+            "creado_por": user_id,
+            "predio_padre_id": req.matrizId,
+            "fecha_creacion": next_fiscal_year
+        })
+        lote2_id = ins_l2.scalar()
+        _generar_vertices_y_linderos(db, lote2_id)
+
+        db.commit()
+        log_audit(db, "INFO", "PREDIO_FRACCIONADO", f"Predio {matriz.get('cod_catastral')} fraccionado en Lotes {l1_cod} y {l2_cod}", user_id)
+
+        # Nombre posesionario lote 2
+        lote2_pos_nombre = req.lote2.get("nombre") or ""
+        if lote2_pos_id and not lote2_pos_nombre:
+            p_n = db.execute(text("SELECT nombre FROM catastro.posesionario WHERE id = :p"), {"p": lote2_pos_id}).fetchone()
+            if p_n: lote2_pos_nombre = p_n[0]
+
+        return {
+            "success": True,
+            "message": "Fraccionamiento registrado exitosamente",
+            "matriz_id": req.matrizId,
+            "lote1_id": lote1_id,
+            "lote2_id": lote2_id,
+            "lote1_cod": l1_cod,
+            "lote2_cod": l2_cod,
+            "lote1_titular": matriz.get("nombre_posesionario") or "Mismo Titular",
+            "lote2_titular": lote2_pos_nombre,
+            "vigencia": next_fiscal_year,
+            "vigencia_matriz_hasta": end_curr_year
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error en fraccionamiento atómico: {str(e)}")

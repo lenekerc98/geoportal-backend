@@ -1,5 +1,5 @@
 import os
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.core.database import get_db
@@ -147,3 +147,91 @@ def report_frontend_error(data: FrontendErrorReport, db: Session = Depends(get_d
         enviar_alerta=debe_enviar_alerta
     )
     return {"status": "ok", "message": "Error reportado"}
+
+
+@router.get("/database-info")
+def get_database_info(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Retorna información de las bases de datos en AWS RDS:
+    - Estado de producción (catastro-db)
+    - Estado de prueba (catastro-db-test)
+    - Entorno actual que está utilizando el usuario consultante.
+    """
+    from app.core.database import engine_prod, engine_test, is_superadmin_request
+    from sqlalchemy import text
+
+    is_super = is_superadmin_request(request)
+    requested_env = (request.headers.get("X-Database-Env") or "").lower().strip()
+    active_env = "test" if (is_super and requested_env == "test") else "prod"
+
+    prod_info = {"name": "catastro-db", "status": "UNKNOWN", "predios": 0}
+    test_info = {"name": "catastro-db-test", "status": "UNKNOWN", "predios": 0}
+
+    # Verificar Prod
+    try:
+        with engine_prod.connect() as conn:
+            c = conn.execute(text("SELECT count(*) FROM catastro.predio")).scalar()
+            prod_info["status"] = "ONLINE"
+            prod_info["predios"] = c
+    except Exception as e:
+        prod_info["status"] = f"ERROR: {str(e)}"
+
+    # Verificar Test
+    try:
+        with engine_test.connect() as conn:
+            c = conn.execute(text("SELECT count(*) FROM catastro.predio")).scalar()
+            test_info["status"] = "ONLINE"
+            test_info["predios"] = c
+    except Exception as e:
+        test_info["status"] = f"ERROR: {str(e)}"
+
+    return {
+        "active_env": active_env,
+        "is_superadmin": is_super,
+        "host": "catastro-db.c09cqw60mwqw.us-east-1.rds.amazonaws.com",
+        "databases": {
+            "prod": prod_info,
+            "test": test_info
+        }
+    }
+
+@router.post("/database-clone")
+def clone_production_to_test(
+    request: Request,
+    current_user = Depends(get_current_user)
+):
+    """
+    Permite al Superadmin sincronizar o refrescar la base de pruebas (catastro-db-test)
+    a partir de la base de producción oficial (catastro-db) en AWS RDS.
+    """
+    from app.core.database import is_superadmin_request
+    import subprocess
+
+    if not is_superadmin_request(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el Superadministrador puede clonar o reiniciar la base de prueba."
+        )
+
+    pg_dump = r"C:\Program Files\PostgreSQL8in\pg_dump.exe"
+    psql = r"C:\Program Files\PostgreSQL8in\psql.exe"
+    source = "postgresql://postgres:L3n3k3rx98.@catastro-db.c09cqw60mwqw.us-east-1.rds.amazonaws.com:5432/catastro-db"
+    dest = "postgresql://postgres:L3n3k3rx98.@catastro-db.c09cqw60mwqw.us-east-1.rds.amazonaws.com:5432/catastro-db-test"
+
+    try:
+        # Ejecutar dump y restore de los esquemas requeridos
+        p1 = subprocess.Popen([pg_dump, f"--dbname={source}", "--schema=seguridad", "--schema=catastro", "--clean", "--if-exists", "--no-owner", "--no-privileges"], stdout=subprocess.PIPE)
+        p2 = subprocess.Popen([psql, f"--dbname={dest}", "-q"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p1.stdout.close()
+        out, err = p2.communicate(timeout=180)
+
+        if p2.returncode != 0:
+            raise Exception(err.decode('utf-8', errors='ignore'))
+
+        return {"status": "ok", "message": "Base de datos de prueba clonada exitosamente desde producción."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error durante el clonado: {str(e)}")
