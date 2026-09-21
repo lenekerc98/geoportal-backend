@@ -298,7 +298,7 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     query_codigo = text("""
         INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
         VALUES (:codigo, :posesionario_id, :empresa_id, true)
-        ON CONFLICT (codigo) DO NOTHING;
+        ON CONFLICT (codigo) DO UPDATE SET posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id);
     """)
     db.execute(query_codigo, {"codigo": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": empresa_to_use})
 
@@ -369,13 +369,14 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         updates.append("cod_catastral = :cod_catastral")
         params["cod_catastral"] = predio.cod_catastral
         
-        # Asegurar que exista en codigo_catastral
+        # Asegurar que exista en codigo_catastral y sincronizar posesionario_id
         query_codigo = text("""
-            INSERT INTO catastro.codigo_catastral (codigo, activo, empresa_id)
-            VALUES (:cod_catastral, true, :empresa_id)
-            ON CONFLICT (codigo) DO NOTHING;
+            INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, activo, empresa_id)
+            VALUES (:cod_catastral, :posesionario_id, true, :empresa_id)
+            ON CONFLICT (codigo) DO UPDATE SET 
+                posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id);
         """)
-        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "empresa_id": predio.empresa_id or current_user.id_empresa})
+        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": predio.empresa_id or current_user.id_empresa})
         
     if predio.empresa_id is not None:
         updates.append("empresa_id = :empresa_id")
@@ -467,6 +468,8 @@ async def delete_predio(id: int, db: Session = Depends(get_db), current_user: An
         result = db.execute(query, {"id": id})
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Predio no encontrado")
+        if row and row[0]:
+            db.execute(text("DELETE FROM catastro.codigo_catastral WHERE codigo = :codigo"), {"codigo": row[0]})
         db.commit()
         log_audit(db, "WARNING", "PREDIO_DELETED", f"Predio {desc_predio} eliminado por {current_user.username}", current_user.id_usuario)
         return {"message": "Predio eliminado exitosamente"}
@@ -831,12 +834,17 @@ async def get_codigos_catastrales(
         target_empresa_id = current_user.id_empresa
 
     query = text("""
-        SELECT DISTINCT cc.codigo, cc.activo, cc.fecha_creacion, cc.posesionario_id,
+        SELECT DISTINCT cc.codigo, cc.activo, cc.fecha_creacion, 
+               COALESCE(p.posesionario_id, cc.posesionario_id) AS posesionario_id,
                pos.cedula AS cedula_posesionario, pos.nombre AS nombre_posesionario,
-               e.nombre AS empresa_nombre
+               e.nombre AS empresa_nombre,
+               p.id AS predio_id,
+               p.area_ha,
+               COALESCE(cc.empresa_id, p.empresa_id) AS empresa_id,
+               p.proyecto_id
         FROM catastro.codigo_catastral cc
-        LEFT JOIN catastro.posesionario pos ON cc.posesionario_id = pos.id
-        LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral
+        LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+        LEFT JOIN catastro.posesionario pos ON COALESCE(p.posesionario_id, cc.posesionario_id) = pos.id
         LEFT JOIN catastro.empresa e ON COALESCE(cc.empresa_id, p.empresa_id) = e.id
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id OR p.empresa_id = :empresa_id)
           AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id)
@@ -859,7 +867,12 @@ async def get_codigos_catastrales(
                 posesionario_id=r["posesionario_id"],
                 fecha_creacion=r["fecha_creacion"].replace(tzinfo=timezone.utc) if r["fecha_creacion"] else None,
                 cedula_posesionario=r["cedula_posesionario"],
-                nombre_posesionario=r["nombre_posesionario"]
+                nombre_posesionario=r["nombre_posesionario"],
+                empresa_nombre=r["empresa_nombre"],
+                predio_id=r["predio_id"],
+                area_ha=float(r["area_ha"]) if r["area_ha"] is not None else None,
+                empresa_id=r["empresa_id"],
+                proyecto_id=r["proyecto_id"]
             ) for r in rows
         ]
     except Exception as e:
@@ -1784,41 +1797,79 @@ def update_cad_metadata(
     log_audit(db, "UPDATE", "CARTA_METADATA_UPDATED", f"Metadatos de carta {final_nombre} actualizados", current_user.id_usuario)
     return {"message": "Metadatos actualizados correctamente", "data": data.dict()}
 
+class DefaultCartaRequest(BaseModel):
+    empresa_id: int
+    nombre_archivo: Optional[str] = None
+
+@router.post("/cad-archivos/predeterminada")
+async def set_default_cad_archivo(
+    req: DefaultCartaRequest,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user)
+):
+    emp = db.execute(text("SELECT id, nombre, parametros FROM catastro.empresa WHERE id = :id"), {"id": req.empresa_id}).mappings().first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    
+    params = dict(emp["parametros"] or {})
+    if req.nombre_archivo and req.nombre_archivo.strip():
+        params["carta_predeterminada"] = req.nombre_archivo.strip()
+    else:
+        params.pop("carta_predeterminada", None)
+    
+    import json
+    db.execute(
+        text("UPDATE catastro.empresa SET parametros = :params WHERE id = :id"),
+        {"id": req.empresa_id, "params": json.dumps(params)}
+    )
+    db.commit()
+    log_audit(db, "UPDATE", "CARTA_DEFAULT_SET", f"Carta {req.nombre_archivo} configurada como predeterminada para {emp['nombre']}", current_user.id_usuario)
+    return {"message": "Carta predeterminada actualizada", "carta_predeterminada": params.get("carta_predeterminada"), "parametros": params}
+
 @router.get("/cad-archivos")
-async def get_cad_archivos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+async def get_cad_archivos(empresa_id: Optional[int] = None, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
     Obtiene la lista de archivos CAD importados y sus capas detectadas vinculadas exactamente por nombre_archivo.
     """
+    target_empresa_id = empresa_id or getattr(current_user, 'id_empresa', None)
+    default_carta = None
+    if target_empresa_id:
+        emp = db.execute(text("SELECT parametros FROM catastro.empresa WHERE id = :id"), {"id": target_empresa_id}).mappings().first()
+        if emp and emp.get("parametros"):
+            default_carta = emp["parametros"].get("carta_predeterminada")
+
     query = text("""
         SELECT 
-            c.nombre_archivo,
-            c.formato_origen,
-            COUNT(*) as total_elementos,
-            array_agg(DISTINCT c.capa_cad) as capas,
-            MAX(c.fecha_subida) as fecha_subida,
+            COALESCE(c.nombre_archivo, ct.nombre_archivo) as nombre_archivo,
+            COALESCE(c.formato_origen, 'dxf') as formato_origen,
+            COUNT(c.id) as total_elementos,
+            COALESCE(array_agg(DISTINCT c.capa_cad) FILTER (WHERE c.capa_cad IS NOT NULL), ARRAY[]::varchar[]) as capas,
+            COALESCE(MAX(c.fecha_subida), MAX(ct.fecha_creacion)) as fecha_subida,
             COALESCE(MAX(ct.codigo), '') as codigo,
             COALESCE(MAX(ct.nombre), '') as nombre,
             COALESCE(MAX(ct.cuadricula), '') as cuadricula,
             COALESCE(MAX(ct.escala), '1:50000') as escala,
             MAX(ct.id) as carta_id
         FROM catastro.capas_cad_cartas c
-        LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
-        GROUP BY c.nombre_archivo, c.formato_origen
-        ORDER BY fecha_subida DESC
+        FULL OUTER JOIN catastro.cartas_topograficas ct ON LOWER(ct.nombre_archivo) = LOWER(c.nombre_archivo)
+        WHERE COALESCE(c.nombre_archivo, ct.nombre_archivo) IS NOT NULL
+        GROUP BY COALESCE(c.nombre_archivo, ct.nombre_archivo), c.formato_origen
+        ORDER BY fecha_subida DESC NULLS LAST
     """)
     rows = db.execute(query).mappings().all()
     return [
         {
             "nombre_archivo": r["nombre_archivo"],
-            "formato_origen": r["formato_origen"],
-            "total_elementos": r["total_elementos"],
+            "formato_origen": r["formato_origen"] or "dxf",
+            "total_elementos": r["total_elementos"] or 0,
             "capas": sorted(r["capas"]) if r["capas"] else [],
             "fecha_subida": r["fecha_subida"],
             "codigo": r["codigo"] or "",
             "nombre": r["nombre"] or "",
             "cuadricula": r["cuadricula"] or "",
             "escala": r["escala"] or "1:50000",
-            "carta_id": r["carta_id"]
+            "carta_id": r["carta_id"],
+            "es_predeterminada": bool(default_carta and r["nombre_archivo"] and r["nombre_archivo"].strip().lower() == default_carta.strip().lower())
         } for r in rows
     ]
 
@@ -1829,13 +1880,14 @@ async def get_cad_layers_geojson(
     archivo: Optional[str] = None,
     layers: Optional[str] = None,
     simplify: Optional[float] = 1.0,
+    bbox: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Obtiene el GeoJSON de las entidades CAD de forma ultra-optimizada con simplificacion geometrica y cache en memoria.
+    Obtiene el GeoJSON de las entidades CAD de forma ultra-optimizada con simplificacion geometrica, filtrado por bbox y cache en memoria.
     """
-    cache_key = f"{archivo}_{layers}_{simplify}"
+    cache_key = f"{archivo}_{layers}_{simplify}_{bbox}"
     if cache_key in _CAD_GEOJSON_CACHE:
         return Response(
             content=_CAD_GEOJSON_CACHE[cache_key],
@@ -1855,6 +1907,19 @@ async def get_cad_layers_geojson(
         if layer_list:
             where_clauses.append("UPPER(capa_cad) = ANY(:layer_list)")
             params["layer_list"] = layer_list
+
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) == 4:
+                min_x, min_y, max_x, max_y = parts
+                where_clauses.append("ST_Intersects(geom, ST_Transform(ST_MakeEnvelope(:min_x, :min_y, :max_x, :max_y, 4326), 32717))")
+                params["min_x"] = min_x
+                params["min_y"] = min_y
+                params["max_x"] = max_x
+                params["max_y"] = max_y
+        except Exception:
+            pass
 
     where_sql = " AND ".join(where_clauses)
     
@@ -1900,18 +1965,71 @@ async def get_cad_layers_geojson(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo GeoJSON CAD: {str(e)}")
 
+@router.delete("/cad-archivos/{nombre_archivo}/capas/{capa_cad}")
+async def delete_cad_capa(
+    nombre_archivo: str,
+    capa_cad: str,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user)
+):
+    role_name = current_user.rol.nombre.lower() if (current_user.rol and current_user.rol.nombre) else ""
+    has_perm = role_name in ["superadmin", "superadministrador", "admin", "administrador"]
+    if not has_perm and current_user.rol and current_user.rol.permisos:
+        has_perm = bool(current_user.rol.permisos.get("cartas_topograficas"))
+    if not has_perm:
+        raise HTTPException(status_code=403, detail="No tienes permisos para eliminar capas CAD.")
+
+    clean_file = nombre_archivo.strip()
+    clean_capa = capa_cad.strip()
+    try:
+        db.execute(
+            text("DELETE FROM catastro.capas_cad_cartas WHERE (LOWER(nombre_archivo) = LOWER(:archivo) OR nombre_archivo = :archivo) AND (LOWER(capa_cad) = LOWER(:capa) OR capa_cad = :capa)"),
+            {"archivo": clean_file, "capa": clean_capa}
+        )
+        count = db.execute(
+            text("SELECT COUNT(*) FROM catastro.capas_cad_cartas WHERE LOWER(nombre_archivo) = LOWER(:archivo)"),
+            {"archivo": clean_file}
+        ).scalar()
+        if count == 0:
+            db.execute(
+                text("DELETE FROM catastro.cartas_topograficas WHERE LOWER(nombre_archivo) = LOWER(:archivo) OR nombre_archivo = :archivo"),
+                {"archivo": clean_file}
+            )
+        db.commit()
+        _CAD_GEOJSON_CACHE.clear()
+        log_audit(db, "DELETE", "CAD_CAPA_DELETED", f"Capa {clean_capa} de {clean_file} eliminada por {current_user.username}", current_user.id_usuario)
+        return {"message": f"Capa {capa_cad} eliminada exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/cad-archivos/{nombre_archivo}")
-async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+async def delete_cad_archivo(nombre_archivo: str, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
     Elimina un archivo CAD y todas sus capas asociadas (requiere Administrador o Superadmin).
     """
-    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
-    if role_name not in ["superadmin", "superadministrador", "admin", "administrador"]:
+    role_name = current_user.rol.nombre.lower() if (current_user.rol and current_user.rol.nombre) else ""
+    has_perm = role_name in ["superadmin", "superadministrador", "admin", "administrador"]
+    if not has_perm and current_user.rol and current_user.rol.permisos:
+        has_perm = bool(current_user.rol.permisos.get("cartas_topograficas"))
+    if not has_perm:
         raise HTTPException(status_code=403, detail="Se requiere rol de Administrador para eliminar archivos CAD.")
+
+    clean_file = nombre_archivo.strip()
     try:
-        db.execute(text("DELETE FROM catastro.capas_cad_cartas WHERE nombre_archivo = :archivo"), {"archivo": nombre_archivo})
+        db.execute(text("DELETE FROM catastro.capas_cad_cartas WHERE LOWER(nombre_archivo) = LOWER(:archivo) OR nombre_archivo = :archivo"), {"archivo": clean_file})
+        db.execute(text("DELETE FROM catastro.cartas_topograficas WHERE LOWER(nombre_archivo) = LOWER(:archivo) OR nombre_archivo = :archivo"), {"archivo": clean_file})
+        
+        db.execute(text("""
+            UPDATE catastro.empresa 
+            SET parametros = parametros - 'carta_predeterminada'
+            WHERE parametros->>'carta_predeterminada' = :archivo
+               OR LOWER(parametros->>'carta_predeterminada') = LOWER(:archivo)
+        """), {"archivo": clean_file})
+        
         db.commit()
         _CAD_GEOJSON_CACHE.clear()
+        log_audit(db, "DELETE", "CAD_FILE_DELETED", f"Archivo CAD {clean_file} eliminado por {current_user.username}", current_user.id_usuario)
         return {"message": f"Archivo CAD {nombre_archivo} eliminado exitosamente"}
     except Exception as e:
         db.rollback()
@@ -2074,3 +2192,32 @@ async def fraccionar_predio(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error en fraccionamiento atómico: {str(e)}")
+
+@router.put("/posesionarios/{id}")
+async def update_posesionario(id: int, pos: schemas.PosesionarioBase, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+    """Actualizar nombre o cédula de un posesionario"""
+    db.execute(text("UPDATE catastro.posesionario SET nombre = :nombre, cedula = :cedula WHERE id = :id"), {
+        "nombre": pos.nombre,
+        "cedula": pos.cedula,
+        "id": id
+    })
+    db.commit()
+    return {"status": "ok", "message": "Posesionario actualizado exitosamente"}
+
+@router.put("/predios/{id}/linderos")
+async def update_predio_linderos(id: int, payload: schemas.PredioLinderosUpdate, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+    """Actualizar colindantes y rumbos de los linderos de un predio"""
+    for lindero in payload.linderos:
+        db.execute(text("""
+            UPDATE catastro.linea_lindero 
+            SET colindante = :col,
+                rumbo = COALESCE(:rum, rumbo)
+            WHERE id = :lid AND predio_id = :pid
+        """), {
+            "col": lindero.colindante or "",
+            "rum": lindero.rumbo,
+            "lid": lindero.id,
+            "pid": id
+        })
+    db.commit()
+    return {"status": "ok", "message": "Linderos actualizados exitosamente"}

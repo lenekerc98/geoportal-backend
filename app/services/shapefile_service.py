@@ -66,11 +66,26 @@ def procesar_shapefile(
         if db_url.startswith("postgresql+psycopg2://"):
             db_url = db_url.replace("postgresql+psycopg2://", "postgresql://")
             
+        # Manejo de codificación de caracteres en DBF (evitar corrupción de 'ñ', tildes, etc.)
+        cpg_file = os.path.splitext(shp_file)[0] + ".cpg"
+        encoding_flags = []
+        if os.path.exists(cpg_file):
+            try:
+                with open(cpg_file, 'r', errors='ignore') as f:
+                    cpg_val = f.read().strip()
+                if cpg_val:
+                    encoding_flags = ["-oo", f"ENCODING={cpg_val}"]
+            except Exception:
+                pass
+        if not encoding_flags:
+            encoding_flags = ["-oo", "ENCODING=LATIN1"]
+
         cmd = [
             "ogr2ogr",
             "-f", "PostgreSQL",
             f"PG:{db_url}",
             shp_file,
+            *encoding_flags,
             "-nln", tabla_completa,
             "-lco", "GEOMETRY_NAME=geom",
             "-lco", "FID=id",

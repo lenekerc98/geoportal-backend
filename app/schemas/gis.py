@@ -23,6 +23,10 @@ class CodigoCatastral(CodigoCatastralBase):
     cedula_posesionario: Optional[str] = None
     nombre_posesionario: Optional[str] = None
     empresa_nombre: Optional[str] = None
+    predio_id: Optional[int] = None
+    area_ha: Optional[float] = None
+    empresa_id: Optional[int] = None
+    proyecto_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -206,3 +210,11 @@ class CapaCadItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+class LinderoUpdateItem(BaseModel):
+    id: int
+    colindante: Optional[str] = ""
+    rumbo: Optional[str] = None
+
+class PredioLinderosUpdate(BaseModel):
+    linderos: List[LinderoUpdateItem]

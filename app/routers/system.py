@@ -235,3 +235,190 @@ def clone_production_to_test(
         return {"status": "ok", "message": "Base de datos de prueba clonada exitosamente desde producción."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error durante el clonado: {str(e)}")
+
+
+class PurgeCatastroRequest(BaseModel):
+    empresa_id: Optional[int] = None
+    eliminar_predios: bool = True
+    eliminar_posesionarios: bool = True
+    confirmacion: str
+
+
+@router.get("/purge-stats")
+def get_purge_stats(
+    request: Request,
+    empresa_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Retorna el conteo actual de predios, posesionarios, vértices y linderos para una empresa o global.
+    Exclusivo para Superadministradores.
+    """
+    from app.core.database import is_superadmin_request
+    if not is_superadmin_request(request):
+        role_name = current_user.rol.nombre.lower() if getattr(current_user, 'rol', None) else ""
+        if role_name not in ["superadmin", "superadministrador"]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso denegado: solo el Superadministrador puede acceder a la purga de datos.")
+
+    try:
+        p_count = db.execute(
+            text("SELECT count(*) FROM catastro.predio WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+            {"emp_id": empresa_id}
+        ).scalar() or 0
+
+        pos_count = db.execute(
+            text("SELECT count(*) FROM catastro.posesionario WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+            {"emp_id": empresa_id}
+        ).scalar() or 0
+
+        v_count = db.execute(
+            text("SELECT count(*) FROM catastro.vertice WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+            {"emp_id": empresa_id}
+        ).scalar() or 0
+
+        l_count = db.execute(
+            text("SELECT count(*) FROM catastro.linea_lindero WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+            {"emp_id": empresa_id}
+        ).scalar() or 0
+
+        cc_count = db.execute(
+            text("SELECT count(*) FROM catastro.codigo_catastral WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+            {"emp_id": empresa_id}
+        ).scalar() or 0
+
+        return {
+            "predios": p_count,
+            "posesionarios": pos_count,
+            "vertices": v_count,
+            "linderos": l_count,
+            "codigos_catastrales": cc_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener estadísticas de catastro: {str(e)}")
+
+
+@router.post("/purge-catastro")
+def purge_catastro(
+    payload: PurgeCatastroRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Eliminación masiva de predios, posesionarios y elementos topológicos.
+    Exclusivo para Superadministradores con confirmación textual obligatoria.
+    """
+    from app.core.database import is_superadmin_request
+    if not is_superadmin_request(request):
+        role_name = current_user.rol.nombre.lower() if getattr(current_user, 'rol', None) else ""
+        if role_name not in ["superadmin", "superadministrador"]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso denegado: solo el Superadministrador puede ejecutar la eliminación masiva.")
+
+    if payload.confirmacion.strip().upper() != "ELIMINAR":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Debe escribir exactamente la palabra 'ELIMINAR' para autorizar el borrado.")
+
+    if not payload.eliminar_predios and not payload.eliminar_posesionarios:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Debe seleccionar al menos una opción a eliminar (Predios o Posesionarios).")
+
+    emp_id = payload.empresa_id
+    deleted_info = {
+        "predios": 0,
+        "posesionarios": 0,
+        "vertices": 0,
+        "linderos": 0,
+        "codigos_catastrales": 0
+    }
+
+    try:
+        # 1. Eliminar Predios y dependencias topológicas
+        if payload.eliminar_predios:
+            # Romper autorreferencia de predio_padre_id
+            db.execute(
+                text("UPDATE catastro.predio SET predio_padre_id = NULL WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            # Vértices
+            res_v = db.execute(
+                text("DELETE FROM catastro.vertice WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            deleted_info["vertices"] = res_v.rowcount
+
+            # Linderos
+            res_l = db.execute(
+                text("DELETE FROM catastro.linea_lindero WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            deleted_info["linderos"] = res_l.rowcount
+
+            # Historial de predios si existe
+            try:
+                db.execute(
+                    text("DELETE FROM catastro.predio_historial WHERE predio_id IN (SELECT id FROM catastro.predio WHERE :emp_id IS NULL OR empresa_id = :emp_id)"),
+                    {"emp_id": emp_id}
+                )
+            except Exception:
+                pass
+
+            # Predios
+            res_p = db.execute(
+                text("DELETE FROM catastro.predio WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            deleted_info["predios"] = res_p.rowcount
+
+        # 2. Eliminar Posesionarios y Códigos Catastrales
+        if payload.eliminar_posesionarios:
+            # Si no se eliminaron predios, desvincular posesionarios para evitar fallas de FK
+            if not payload.eliminar_predios:
+                db.execute(
+                    text("UPDATE catastro.predio SET posesionario_id = NULL WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                    {"emp_id": emp_id}
+                )
+
+            # Códigos catastrales
+            res_cc = db.execute(
+                text("DELETE FROM catastro.codigo_catastral WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            deleted_info["codigos_catastrales"] = res_cc.rowcount
+
+            # Posesionarios
+            res_pos = db.execute(
+                text("DELETE FROM catastro.posesionario WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                {"emp_id": emp_id}
+            )
+            deleted_info["posesionarios"] = res_pos.rowcount
+
+        db.commit()
+
+        # Auditoría del sistema
+        db_env = (request.headers.get("X-Database-Env") or "prod").upper()
+        empresa_desc = f"empresa ID {emp_id}" if emp_id else "TODAS las empresas"
+        detalle_audit = (
+            f"Purga masiva ejecutada en base [{db_env}] para {empresa_desc}. "
+            f"Predios: {deleted_info['predios']}, Posesionarios: {deleted_info['posesionarios']}, "
+            f"Vértices: {deleted_info['vertices']}, Linderos: {deleted_info['linderos']}."
+        )
+
+        try:
+            log_audit(
+                db=db,
+                tipo="CRITICAL",
+                accion="PURGA_MASIVA_CATASTRO",
+                descripcion=detalle_audit,
+                id_usuario=current_user.id_usuario
+            )
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "message": "Eliminación masiva completada exitosamente.",
+            "deleted": deleted_info
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error durante la eliminación masiva: {str(e)}")
