@@ -50,9 +50,20 @@ def procesar_shapefile(
 
         base_shp = os.path.splitext(shp_file)[0]
         missing_parts = []
-        if not (os.path.exists(base_shp + ".dbf") or os.path.exists(base_shp + ".DBF")):
+        dbf_file = None
+        shx_file = None
+        for ext in [".dbf", ".DBF"]:
+            if os.path.exists(base_shp + ext):
+                dbf_file = base_shp + ext
+                break
+        for ext in [".shx", ".SHX"]:
+            if os.path.exists(base_shp + ext):
+                shx_file = base_shp + ext
+                break
+
+        if not dbf_file:
             missing_parts.append(".dbf")
-        if not (os.path.exists(base_shp + ".shx") or os.path.exists(base_shp + ".SHX")):
+        if not shx_file:
             missing_parts.append(".shx")
         if missing_parts:
             raise ValueError(f"El shapefile está incompleto. Faltan los componentes obligatorios: {', '.join(missing_parts)}")
@@ -66,19 +77,55 @@ def procesar_shapefile(
         if db_url.startswith("postgresql+psycopg2://"):
             db_url = db_url.replace("postgresql+psycopg2://", "postgresql://")
             
-        # Manejo de codificación de caracteres en DBF (evitar corrupción de 'ñ', tildes, etc.)
-        cpg_file = os.path.splitext(shp_file)[0] + ".cpg"
-        encoding_flags = []
-        if os.path.exists(cpg_file):
+        # Manejo robusto de codificación de caracteres en DBF
+        cpg_file = None
+        for ext in [".cpg", ".CPG", ".Cpg"]:
+            if os.path.exists(base_shp + ext):
+                cpg_file = base_shp + ext
+                break
+
+        cpg_val = None
+        if cpg_file:
             try:
                 with open(cpg_file, 'r', errors='ignore') as f:
                     cpg_val = f.read().strip()
-                if cpg_val:
-                    encoding_flags = ["-oo", f"ENCODING={cpg_val}"]
             except Exception:
                 pass
-        if not encoding_flags:
-            encoding_flags = ["-oo", "ENCODING=LATIN1"]
+
+        # Validar si el DBF realmente es UTF-8 o contiene bytes en LATIN1/CP1252 (como 'ñ' 0xd1, tildes)
+        detected_encoding = "LATIN1"
+        if dbf_file and os.path.exists(dbf_file):
+            try:
+                import struct
+                with open(dbf_file, "rb") as f:
+                    header = f.read(32)
+                    if len(header) >= 12:
+                        num_records, header_len, record_len = struct.unpack("<IHH", header[4:12])
+                        f.seek(header_len)
+                        es_utf8 = True
+                        records_to_test = min(500, num_records)
+                        for _ in range(records_to_test):
+                            chunk = f.read(record_len)
+                            if not chunk:
+                                break
+                            try:
+                                chunk.decode("utf-8")
+                            except UnicodeDecodeError:
+                                es_utf8 = False
+                                break
+                        if es_utf8 and (cpg_val or "").upper() in ["UTF-8", "UTF8"]:
+                            detected_encoding = "UTF-8"
+                        elif es_utf8 and not cpg_val:
+                            detected_encoding = "UTF-8"
+                        else:
+                            detected_encoding = "LATIN1"
+            except Exception as check_err:
+                logging.warning(f"Error analizando cabecera DBF: {check_err}")
+                detected_encoding = cpg_val if cpg_val else "LATIN1"
+        else:
+            detected_encoding = cpg_val if cpg_val else "LATIN1"
+
+        encoding_flags = ["-oo", f"ENCODING={detected_encoding}"]
 
         cmd = [
             "ogr2ogr",
@@ -93,11 +140,14 @@ def procesar_shapefile(
             "-overwrite"
         ]
         
-        logging.info(f"Ejecutando ogr2ogr: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        logging.info(f"Ejecutando ogr2ogr con encoding={detected_encoding}: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True)
+        stderr_str = result.stderr.decode('utf-8', errors='replace') if result.stderr else ""
+        stdout_str = result.stdout.decode('utf-8', errors='replace') if result.stdout else ""
         
         if result.returncode != 0:
-            raise ValueError(f"Error en ogr2ogr: {result.stderr}")
+            logging.error(f"Error en ogr2ogr (código {result.returncode}): {stderr_str}")
+            raise RuntimeError(f"Error al procesar el archivo espacial con ogr2ogr: {stderr_str}")
             
         import re
         SAFE_IDENT = re.compile(r"^[a-zA-Z0-9_]+$")

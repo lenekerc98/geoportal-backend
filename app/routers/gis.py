@@ -1119,9 +1119,36 @@ async def import_shapefile(
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        err_msg = str(ve)
+        if isinstance(ve, UnicodeDecodeError) or "codec can't decode" in err_msg or "ogr2ogr" in err_msg:
+            import traceback
+            log_audit(
+                db, 
+                "ERROR", 
+                "SHAPEFILE_IMPORT_ERROR", 
+                f"Error inesperado al procesar shapefile: {err_msg}\n\nTraceback:\n{traceback.format_exc()}", 
+                current_user.id_usuario, 
+                enviar_alerta=True
+            )
+            raise HTTPException(
+                status_code=500, 
+                detail="Error inesperado al procesar el archivo. El equipo de soporte ha sido notificado por correo. Por favor, consulte con soporte técnico."
+            )
+        raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        log_audit(
+            db, 
+            "ERROR", 
+            "SHAPEFILE_IMPORT_ERROR", 
+            f"Error crítico al procesar shapefile: {str(e)}\n\nTraceback:\n{traceback.format_exc()}", 
+            current_user.id_usuario, 
+            enviar_alerta=True
+        )
+        raise HTTPException(
+            status_code=500, 
+            detail="Error inesperado al procesar el archivo. El equipo de soporte ha sido notificado por correo. Por favor, consulte con soporte técnico."
+        )
     finally:
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
@@ -1748,9 +1775,36 @@ def import_dxf_file(
         _CAD_GEOJSON_CACHE.clear()
         return {"message": "Archivo CAD DXF importado exitosamente", "data": resultado}
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        err_msg = str(ve)
+        if isinstance(ve, UnicodeDecodeError) or "codec can't decode" in err_msg or "ogr2ogr" in err_msg:
+            import traceback
+            log_audit(
+                db, 
+                "ERROR", 
+                "SHAPEFILE_IMPORT_ERROR", 
+                f"Error inesperado al procesar shapefile: {err_msg}\n\nTraceback:\n{traceback.format_exc()}", 
+                current_user.id_usuario, 
+                enviar_alerta=True
+            )
+            raise HTTPException(
+                status_code=500, 
+                detail="Error inesperado al procesar el archivo. El equipo de soporte ha sido notificado por correo. Por favor, consulte con soporte técnico."
+            )
+        raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        log_audit(
+            db, 
+            "ERROR", 
+            "SHAPEFILE_IMPORT_ERROR", 
+            f"Error crítico al procesar shapefile: {str(e)}\n\nTraceback:\n{traceback.format_exc()}", 
+            current_user.id_usuario, 
+            enviar_alerta=True
+        )
+        raise HTTPException(
+            status_code=500, 
+            detail="Error inesperado al procesar el archivo. El equipo de soporte ha sido notificado por correo. Por favor, consulte con soporte técnico."
+        )
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
