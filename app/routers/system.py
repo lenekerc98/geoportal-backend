@@ -76,7 +76,8 @@ def get_system_logs(db: Session = Depends(get_db), current_user = Depends(get_cu
                 "accion": log.accion,
                 "descripcion": log.descripcion,
                 "fecha": log.fecha.isoformat() if log.fecha else None,
-                "username": username
+                "username": username,
+                "correo_enviado": getattr(log, 'correo_enviado', None)
             })
         
         return result
@@ -199,42 +200,170 @@ def get_database_info(
         }
     }
 
+class DatabaseCloneRequest(BaseModel):
+    direction: str = "prod_to_test"  # "prod_to_test" o "test_to_prod"
+    confirmacion: Optional[str] = None
+
+
+def _find_pg_tool(name: str) -> Optional[str]:
+    # Priorizar siempre la versión nativa de PostgreSQL instalada (ej: 18.3) para evitar conflictos de versión con QGIS
+    for v in ["18", "17", "16", "15", "14"]:
+        candidate = rf"C:\Program Files\PostgreSQL\{v}\bin\{name}.exe"
+        if os.path.exists(candidate):
+            return candidate
+        pgadmin_candidate = rf"C:\Program Files\PostgreSQL\{v}\pgAdmin 4\runtime\{name}.exe"
+        if os.path.exists(pgadmin_candidate):
+            return pgadmin_candidate
+    import shutil
+    p = shutil.which(name)
+    if p:
+        return p
+    return None
+
+
 @router.post("/database-clone")
-def clone_production_to_test(
+def clone_database(
+    req: DatabaseCloneRequest,
     request: Request,
     current_user = Depends(get_current_user)
 ):
     """
-    Permite al Superadmin sincronizar o refrescar la base de pruebas (catastro-db-test)
-    a partir de la base de producción oficial (catastro-db) en AWS RDS.
+    Permite al Superadmin sincronizar o refrescar las bases de datos en AWS RDS:
+    - 'prod_to_test': Copia la producción oficial (catastro-db) hacia la de prueba (catastro-db-test).
+    - 'test_to_prod': Copia la base de prueba (catastro-db-test) hacia la oficial de producción (catastro-db).
     """
-    from app.core.database import is_superadmin_request
+    from app.core.database import is_superadmin_request, engine_prod, engine_test
     import subprocess
 
-    if not is_superadmin_request(request):
+    is_super = is_superadmin_request(request)
+    if not is_super:
+        role_name = current_user.rol.nombre.lower() if getattr(current_user, 'rol', None) else ""
+        if role_name not in ["superadmin", "superadministrador"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo el Superadministrador puede sincronizar las bases de datos."
+            )
+
+    url_prod = os.getenv("DATABASE_URL_PROD") or os.getenv("DATABASE_URL")
+    url_test = os.getenv("DATABASE_URL_TEST")
+
+    if not url_prod or not url_test:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el Superadministrador puede clonar o reiniciar la base de prueba."
+            status_code=500,
+            detail="Las variables de entorno DATABASE_URL_PROD y DATABASE_URL_TEST deben estar configuradas."
         )
 
-    pg_dump = r"C:\Program Files\PostgreSQL8in\pg_dump.exe"
-    psql = r"C:\Program Files\PostgreSQL8in\psql.exe"
-    source = "postgresql://postgres:L3n3k3rx98.@catastro-db.c09cqw60mwqw.us-east-1.rds.amazonaws.com:5432/catastro-db"
-    dest = "postgresql://postgres:L3n3k3rx98.@catastro-db.c09cqw60mwqw.us-east-1.rds.amazonaws.com:5432/catastro-db-test"
+    direction = req.direction.lower().strip()
+    if direction == "prod_to_test":
+        source = url_prod
+        dest = url_test
+        direction_msg = "Producción ➔ Prueba"
+        dest_engine = engine_test
+    elif direction == "test_to_prod":
+        if req.confirmacion != "SINCRONIZAR_A_PRODUCCION":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Confirmación de seguridad requerida para sincronizar hacia producción (código: SINCRONIZAR_A_PRODUCCION)."
+            )
+        source = url_test
+        dest = url_prod
+        direction_msg = "Prueba ➔ Producción"
+        dest_engine = engine_prod
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Dirección no válida: '{req.direction}'. Debe ser 'prod_to_test' o 'test_to_prod'."
+        )
+
+    pg_dump = _find_pg_tool("pg_dump")
+    psql = _find_pg_tool("psql")
+
+    if not pg_dump or not psql:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Herramientas de PostgreSQL (pg_dump / psql) no encontradas en el sistema. pg_dump={pg_dump}, psql={psql}"
+        )
 
     try:
-        # Ejecutar dump y restore de los esquemas requeridos
-        p1 = subprocess.Popen([pg_dump, f"--dbname={source}", "--schema=seguridad", "--schema=catastro", "--clean", "--if-exists", "--no-owner", "--no-privileges"], stdout=subprocess.PIPE)
-        p2 = subprocess.Popen([psql, f"--dbname={dest}", "-q"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        p1.stdout.close()
-        out, err = p2.communicate(timeout=180)
+        # 1. Dropear vista dependiente en la BD destino antes del restore para evitar conflictos de DROP TABLE
+        with dest_engine.connect() as conn:
+            conn.execute(text("DROP VIEW IF EXISTS catastro.v_predio_completo CASCADE"))
+            conn.commit()
 
-        if p2.returncode != 0:
-            raise Exception(err.decode('utf-8', errors='ignore'))
+        # 2. Ejecutar dump y restore de los esquemas requeridos mediante archivo temporal seguro (sin riesgo de bloqueo por tuberías)
+        import tempfile
+        import uuid
+        temp_sql = os.path.join(tempfile.gettempdir(), f"dump_sync_{uuid.uuid4().hex[:8]}.sql")
+        try:
+            cmd_dump = [
+                pg_dump,
+                f"--dbname={source}",
+                "--schema=seguridad",
+                "--schema=catastro",
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-privileges",
+                "-f", temp_sql
+            ]
+            res_dump = subprocess.run(cmd_dump, capture_output=True, text=True, timeout=120)
+            if res_dump.returncode != 0:
+                raise RuntimeError(f"Error en pg_dump: {res_dump.stderr}")
 
-        return {"status": "ok", "message": "Base de datos de prueba clonada exitosamente desde producción."}
+            cmd_restore = [
+                psql,
+                f"--dbname={dest}",
+                "-v", "ON_ERROR_STOP=0",
+                "-f", temp_sql
+            ]
+            res_restore = subprocess.run(cmd_restore, capture_output=True, text=True, timeout=180)
+            if res_restore.returncode != 0 and "error" in (res_restore.stderr or "").lower():
+                logging.warning(f"Avisos durante psql restore: {res_restore.stderr}")
+        finally:
+            if os.path.exists(temp_sql):
+                try:
+                    os.remove(temp_sql)
+                except Exception:
+                    pass
+
+        # 3. Recrear la vista v_predio_completo en la base destino
+        with dest_engine.connect() as conn:
+            conn.execute(text("""
+                CREATE OR REPLACE VIEW catastro.v_predio_completo AS
+                SELECT 
+                    p.id,
+                    p.cod_catastral,
+                    p.posesionario_id,
+                    p.empresa_id,
+                    p.proyecto_id,
+                    p.area_ha,
+                    p.geom,
+                    p.estado,
+                    p.fecha_creacion,
+                    p.fecha_baja,
+                    p.predio_padre_id,
+                    pos.cedula,
+                    pos.nombre AS nombre_posesionario
+                FROM catastro.predio p
+                LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
+            """))
+            conn.commit()
+
+        # 4. Obtener conteo actualizado de ambas bases
+        with engine_prod.connect() as cp:
+            c_prod = cp.execute(text("SELECT count(*) FROM catastro.predio")).scalar() or 0
+        with engine_test.connect() as ct:
+            c_test = ct.execute(text("SELECT count(*) FROM catastro.predio")).scalar() or 0
+
+        return {
+            "status": "ok",
+            "message": f"Base de datos sincronizada exitosamente ({direction_msg}).",
+            "direction": direction,
+            "predios_prod": c_prod,
+            "predios_test": c_test
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error durante el clonado: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error durante la sincronización: {str(e)}")
 
 
 class PurgeCatastroRequest(BaseModel):
@@ -368,23 +497,31 @@ def purge_catastro(
             )
             deleted_info["predios"] = res_p.rowcount
 
-        # 2. Eliminar Posesionarios y Códigos Catastrales
+            # Códigos catastrales (se eliminan los de la empresa o cualquier huérfano sin predio)
+            res_cc = db.execute(
+                text("""
+                    DELETE FROM catastro.codigo_catastral 
+                    WHERE (:emp_id IS NULL OR empresa_id = :emp_id)
+                       OR NOT EXISTS (SELECT 1 FROM catastro.predio p WHERE p.cod_catastral = catastro.codigo_catastral.codigo)
+                """),
+                {"emp_id": emp_id}
+            )
+            deleted_info["codigos_catastrales"] = res_cc.rowcount
+
+        # 2. Eliminar Posesionarios (personas)
         if payload.eliminar_posesionarios:
-            # Si no se eliminaron predios, desvincular posesionarios para evitar fallas de FK
+            # Si no se eliminaron predios/códigos, desvincular posesionarios para evitar fallas de FK
             if not payload.eliminar_predios:
                 db.execute(
                     text("UPDATE catastro.predio SET posesionario_id = NULL WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
                     {"emp_id": emp_id}
                 )
+                db.execute(
+                    text("UPDATE catastro.codigo_catastral SET posesionario_id = NULL WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
+                    {"emp_id": emp_id}
+                )
 
-            # Códigos catastrales
-            res_cc = db.execute(
-                text("DELETE FROM catastro.codigo_catastral WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
-                {"emp_id": emp_id}
-            )
-            deleted_info["codigos_catastrales"] = res_cc.rowcount
-
-            # Posesionarios
+            # Posesionarios (catálogo de personas)
             res_pos = db.execute(
                 text("DELETE FROM catastro.posesionario WHERE (:emp_id IS NULL OR empresa_id = :emp_id)"),
                 {"emp_id": emp_id}

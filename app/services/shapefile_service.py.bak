@@ -7,58 +7,7 @@ import subprocess
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
-from typing import Dict, Any, List, Optional
-
-
-def resolver_contexto_empresa_proyecto(db: Session, empresa_id: Optional[int], proyecto_id: Optional[int] = None):
-    """
-    Determina proyecto_id, id_provincia e id_canton por defecto a partir de la empresa o proyecto.
-    """
-    resolved_proyecto_id = proyecto_id
-    resolved_id_provincia = None
-    resolved_id_canton = None
-
-    if empresa_id:
-        try:
-            emp = db.execute(text("SELECT id, provincia, canton, proyecto_id FROM catastro.empresa WHERE id = :eid"), {"eid": empresa_id}).mappings().first()
-            if emp:
-                if not resolved_proyecto_id and emp.get("proyecto_id"):
-                    resolved_proyecto_id = emp["proyecto_id"]
-                
-                if emp.get("provincia"):
-                    prov_row = db.execute(text("SELECT id FROM catastro.provincias WHERE lower(nombre) = lower(:p) LIMIT 1"), {"p": emp["provincia"].strip()}).mappings().first()
-                    if prov_row:
-                        resolved_id_provincia = prov_row["id"]
-                        
-                if emp.get("canton"):
-                    cant_row = db.execute(text("SELECT id FROM catastro.cantones WHERE lower(nombre) = lower(:c) LIMIT 1"), {"c": emp["canton"].strip()}).mappings().first()
-                    if cant_row:
-                        resolved_id_canton = cant_row["id"]
-        except Exception as e:
-            logging.warning(f"Error resolviendo contexto empresa-proyecto: {e}")
-
-    return resolved_proyecto_id, resolved_id_provincia, resolved_id_canton
-
-def resolver_dpa_predio(val_cod: str, default_prov: Optional[int], default_cant: Optional[int], db: Session):
-    """
-    Si el código catastral tiene prefijo DPA válido (primeros 2 dígitos provincia, primeros 4 cantón),
-    lo utiliza; si no, utiliza los predeterminados de la empresa/proyecto.
-    """
-    id_prov = default_prov
-    id_cant = default_cant
-    if val_cod and not str(val_cod).startswith("TEMP-") and len(str(val_cod)) >= 4 and str(val_cod)[:4].isdigit():
-        p_code = str(val_cod)[:2]
-        c_code = str(val_cod)[:4]
-        try:
-            p_row = db.execute(text("SELECT id FROM catastro.provincias WHERE codigo_dpa = :cd LIMIT 1"), {"cd": p_code}).mappings().first()
-            if p_row:
-                id_prov = p_row["id"]
-            c_row = db.execute(text("SELECT id FROM catastro.cantones WHERE codigo_dpa = :cd LIMIT 1"), {"cd": c_code}).mappings().first()
-            if c_row:
-                id_cant = c_row["id"]
-        except Exception as e:
-            logging.warning(f"Error resolviendo DPA por código catastral {val_cod}: {e}")
-    return id_prov, id_cant
+from typing import Dict, Any, List
 
 def procesar_shapefile(
     file_path: str, 
@@ -69,8 +18,7 @@ def procesar_shapefile(
     import_type: str = "catastro_base",
     nombre_capa: str = None,
     user_id: int = None,
-    fecha_creacion: str = None,
-    proyecto_id: int = None
+    fecha_creacion: str = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -79,11 +27,6 @@ def procesar_shapefile(
     temp_dir = os.path.join(os.getcwd(), "Temp", f"shape_{uuid.uuid4().hex}")
     os.makedirs(temp_dir, exist_ok=True)
     
-    if not fecha_creacion:
-        import datetime
-        fecha_creacion = datetime.date.today().isoformat()
-    resolved_proyecto_id, default_prov, default_cant = resolver_contexto_empresa_proyecto(db, empresa_id, proyecto_id)
-
     try:
         # 1. Extraer ZIP con protección Zip Slip
         with zipfile.ZipFile(file_path, 'r') as zip_ref:
@@ -410,9 +353,8 @@ def procesar_shapefile(
                     val_tr = str(fila.get('val_tramite', '') or '').strip() or None
                     val_inst = str(fila.get('val_institucion', '') or '').strip() or None
 
-                    row_id_prov, row_id_cant = resolver_dpa_predio(codigo_asignar, default_prov, default_cant, db)
                     q_predio = text(f"""
-                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton)
+                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion)
                         SELECT 
                             :codigo, :pos_id, :emp_id, 
                             CASE 
@@ -425,10 +367,7 @@ def procesar_shapefile(
                             :fecha_creacion,
                             :fecha_adjudicacion,
                             :numero_tramite,
-                            :institucion,
-                            :proy_id,
-                            :id_prov,
-                            :id_cant
+                            :institucion
                         FROM {tabla_completa} WHERE id = :id_row
                         RETURNING id
                     """)
@@ -441,10 +380,7 @@ def procesar_shapefile(
                         "fecha_creacion": fecha_creacion,
                         "fecha_adjudicacion": val_fa,
                         "numero_tramite": val_tr,
-                        "institucion": val_inst,
-                        "proy_id": resolved_proyecto_id,
-                        "id_prov": row_id_prov,
-                        "id_cant": row_id_cant
+                        "institucion": val_inst
                     }).mappings().first()
                     
                     if res_predio:
@@ -796,8 +732,7 @@ def confirmar_importacion_shapefile(
     db: Session,
     user_id: int = None,
     fecha_creacion: str = None,
-    task_id: str = None,
-    proyecto_id: int = None
+    task_id: str = None
 ) -> Dict[str, Any]:
     """
     Aplica las decisiones del usuario:
@@ -943,7 +878,6 @@ def confirmar_importacion_shapefile(
                                 ins_pos = text("INSERT INTO catastro.posesionario (nombre, empresa_id) VALUES (:nom, :emp_id) RETURNING id")
                                 posesionario_id = db.execute(ins_pos, {"nom": val_nom, "emp_id": empresa_id}).scalar()
 
-                    row_id_prov, row_id_cant = resolver_dpa_predio(final_cod, default_prov, default_cant, db)
                     # Actualizar predio existente
                     q_upd = text(f"""
                         UPDATE catastro.predio
@@ -962,9 +896,6 @@ def confirmar_importacion_shapefile(
                             fecha_adjudicacion = COALESCE(:fa, fecha_adjudicacion),
                             numero_tramite = COALESCE(:tr, numero_tramite),
                             institucion = COALESCE(:inst, institucion),
-                            proyecto_id = COALESCE(proyecto_id, :proy_id),
-                            id_provincia = COALESCE(id_provincia, :id_prov),
-                            id_canton = COALESCE(id_canton, :id_cant),
                             modificado_por = :mod_por,
                             fecha_modificacion = NOW()
                         WHERE id = :target_id
@@ -977,10 +908,7 @@ def confirmar_importacion_shapefile(
                         "tr": val_tr,
                         "inst": val_inst,
                         "mod_por": user_id,
-                        "target_id": target_id,
-                        "proy_id": resolved_proyecto_id,
-                        "id_prov": row_id_prov,
-                        "id_cant": row_id_cant
+                        "target_id": target_id
                     })
 
                     # Regenerar vértices y linderos
@@ -1023,7 +951,7 @@ def confirmar_importacion_shapefile(
         selected_set = set(str(sid) for sid in selected_new_ids)
         for sid_str in selected_set:
             processed_count += 1
-            if task_id and (processed_count % 2 == 0 or processed_count == total_items or processed_count == 1):
+            if task_id and (processed_count % 5 == 0 or processed_count == total_items):
                 PROGRESS_STORE[task_id] = {
                     "progress": round((processed_count / total_items) * 100, 1),
                     "current": processed_count,
@@ -1066,10 +994,9 @@ def confirmar_importacion_shapefile(
                 ON CONFLICT (codigo) DO UPDATE SET posesionario_id = EXCLUDED.posesionario_id
             """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": empresa_id})
 
-            row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
             # Predio
             q_ins = text(f"""
-                INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton)
+                INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion)
                 SELECT 
                     :codigo, :pos_id, :emp_id,
                     CASE 
@@ -1078,8 +1005,7 @@ def confirmar_importacion_shapefile(
                         ELSE ST_Force2D(ST_SetSRID(geom, 32717))
                     END,
                     ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
-                    :creado_por, :fecha_creacion, :fa, :tr, :inst,
-                    :proy_id, :id_prov, :id_cant
+                    :creado_por, :fecha_creacion, :fa, :tr, :inst
                 FROM {staging_table} WHERE id = :id_row
                 RETURNING id
             """)
@@ -1092,10 +1018,7 @@ def confirmar_importacion_shapefile(
                 "fecha_creacion": fecha_creacion,
                 "fa": val_fa,
                 "tr": val_tr,
-                "inst": val_inst,
-                "proy_id": resolved_proyecto_id,
-                "id_prov": row_id_prov,
-                "id_cant": row_id_cant
+                "inst": val_inst
             }).mappings().first()
 
             if new_predio:

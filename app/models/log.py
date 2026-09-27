@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
@@ -13,5 +13,6 @@ class Log(Base):
     descripcion = Column(Text, nullable=False)
     id_usuario = Column(Integer, ForeignKey("seguridad.usuarios.id_usuario"), nullable=True)
     fecha = Column(DateTime, default=datetime.datetime.utcnow)
+    correo_enviado = Column(Boolean, default=False, nullable=True)
 
     usuario = relationship("Usuario")

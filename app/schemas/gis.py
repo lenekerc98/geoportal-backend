@@ -63,6 +63,9 @@ class Lindero(LinderoBase):
 class PredioBase(BaseModel):
     cod_catastral: Optional[str] = None
     area_ha: float
+    fecha_adjudicacion: Optional[str] = None
+    numero_tramite: Optional[str] = None
+    institucion: Optional[str] = None
 
 class PredioCreate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -73,6 +76,9 @@ class PredioCreate(BaseModel):
     rumbos: Optional[List[str]] = None
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
+    fecha_adjudicacion: Optional[str] = None
+    numero_tramite: Optional[str] = None
+    institucion: Optional[str] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -84,6 +90,9 @@ class PredioUpdate(BaseModel):
     rumbos: Optional[List[str]] = None
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
+    fecha_adjudicacion: Optional[str] = None
+    numero_tramite: Optional[str] = None
+    institucion: Optional[str] = None
 
 class PredioAnguloUpdate(BaseModel):
     angulo_texto: float

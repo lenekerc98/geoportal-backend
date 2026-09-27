@@ -25,7 +25,7 @@ from app.core.catalogacion_service import run_catalogacion_masiva
 from app.core.logger import log_audit
 import threading
 import json
-from app.services.shapefile_service import procesar_shapefile
+from app.services.shapefile_service import procesar_shapefile, analizar_shapefile, confirmar_importacion_shapefile
 
 from app.core.file_utils import check_path_exists, get_gdal_path, is_s3_path
 
@@ -85,14 +85,14 @@ async def get_predios_geojson(
         )::text
         FROM catastro.v_predio_completo
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
-        AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id)
+        AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id OR proyecto_id IS NULL)
         {0}
         {1}
         {2};
     """.format(
         "AND fecha_creacion >= :fecha_inicio" if fecha_inicio else "",
         "AND fecha_creacion <= :fecha_fin" if fecha_fin else "",
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -513,7 +513,7 @@ async def get_vertices_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -569,7 +569,7 @@ async def get_lineas_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND fecha_creacion <= CURRENT_DATE"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -1082,6 +1082,8 @@ async def import_shapefile(
     empresa_id: int,
     mapping: str,
     renames: str = "{}",
+    fecha_creacion: Optional[str] = None,
+    proyecto_id: Optional[int] = Form(None),
     import_type: str = Form("catastro_base"),
     nombre_capa: str = Form(None),
     file: UploadFile = File(...),
@@ -1114,7 +1116,9 @@ async def import_shapefile(
         
         # Llamar al servicio
         resultados = procesar_shapefile(
-            temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa, user_id=current_user.id_usuario
+            temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa, 
+            user_id=current_user.id_usuario, fecha_creacion=fecha_creacion,
+            proyecto_id=proyecto_id
         )
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
@@ -1152,6 +1156,95 @@ async def import_shapefile(
     finally:
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
+
+
+class ConfirmarImportacionRequest(BaseModel):
+    staging_table: str
+    empresa_id: int
+    mapping: Dict[str, str]
+    conflict_actions: Dict[str, str] = {}
+    selected_new_ids: List[int] = []
+    fecha_creacion: Optional[str] = None
+    proyecto_id: Optional[int] = None
+    task_id: Optional[str] = None
+
+@router.post("/analizar-shapefile")
+async def endpoint_analizar_shapefile(
+    empresa_id: int,
+    mapping: str,
+    renames: str = "{}",
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Analiza un shapefile contra catastro.predio para detectar conflictos y nuevos predios.
+    """
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .zip que contenga el shapefile.")
+    try:
+        mapeo = json.loads(mapping)
+        renombrar = json.loads(renames)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Los parámetros mapping y renames deben ser JSON válidos.")
+
+    safe_filename = os.path.basename(file.filename)
+    temp_zip_path = os.path.join(UPLOAD_TEMP_DIR, f"{uuid.uuid4().hex}_{safe_filename}")
+    with open(temp_zip_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    try:
+        real_empresa_id = None if empresa_id == 0 else empresa_id
+        res = analizar_shapefile(temp_zip_path, real_empresa_id, mapeo, renombrar, db)
+        return res
+    except Exception as e:
+        import traceback
+        logging.error(f"Error analizando shapefile: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+
+@router.post("/confirmar-importacion")
+def endpoint_confirmar_importacion(
+    req: ConfirmarImportacionRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Confirma y ejecuta la importación aplicando las acciones del usuario (reemplazar/omitir/crear).
+    """
+    try:
+        real_empresa_id = None if req.empresa_id == 0 else req.empresa_id
+        res = confirmar_importacion_shapefile(
+            staging_table=req.staging_table,
+            empresa_id=real_empresa_id,
+            mapping=req.mapping,
+            conflict_actions=req.conflict_actions,
+            selected_new_ids=req.selected_new_ids,
+            db=db,
+            user_id=current_user.id_usuario,
+            fecha_creacion=req.fecha_creacion,
+            task_id=req.task_id,
+            proyecto_id=req.proyecto_id
+        )
+        log_audit(db, "INFO", "SHAPEFILE_CONFIRMED", f"Importación confirmada: {res}", current_user.id_usuario)
+        msg = "Importación finalizada con éxito"
+        if res.get("codigos_ajustados", 0) > 0:
+            msg += f". Se diferenciaron automáticamente {res['codigos_ajustados']} códigos repetidos."
+        return {"message": msg, "data": res}
+    except Exception as e:
+        import traceback
+        logging.error(f"Error confirmando importación: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/shapefile/progreso/{task_id}")
+def obtener_progreso_shapefile(task_id: str):
+    from app.core.ortofoto_service import PROGRESS_STORE
+    if task_id not in PROGRESS_STORE:
+        return {"progress": 0, "status": "Iniciando...", "current": 0, "total": 0}
+    return PROGRESS_STORE[task_id]
 
 @router.get("/capas-adicionales")
 async def get_capas_adicionales(
@@ -1502,7 +1595,7 @@ def get_catalog(
             FROM catastro.ortofotos_catalogo
             WHERE nombre_archivo != 'ortofotos.vrt' 
               AND (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
-              AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id)
+              AND (CAST(:proyecto_id AS INTEGER) IS NULL OR proyecto_id = :proyecto_id OR proyecto_id IS NULL)
         """)
         rows = db.execute(query, {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}).mappings().fetchall()
         
