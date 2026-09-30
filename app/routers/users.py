@@ -49,6 +49,24 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         
     user = db.query(Usuario).filter(Usuario.username == username).first()
     if user is None:
+        if payload.get("role") == "brigadista":
+            op_id = payload.get("operador_temporal_id")
+            from sqlalchemy import text
+            op = db.execute(text("SELECT id, nombre, apellido, nombre_completo, empresa_id, proyecto_id FROM seguridad.operador_temporal WHERE id = :id"), {"id": op_id}).fetchone()
+            if op:
+                class BrigadistaUser:
+                    id_usuario = None
+                    id = None
+                    username = payload.get("sub")
+                    nombre = op[3]
+                    id_empresa = op[4]
+                    id_proyecto = op[5]
+                    role = "brigadista"
+                    rol = type('Rol', (), {'nombre': 'brigadista', 'permisos': {}})()
+                    activo = True
+                    is_brigadista = True
+                    operador_temporal_id = op[0]
+                return BrigadistaUser()
         raise credentials_exception
         
     return user

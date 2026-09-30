@@ -171,6 +171,53 @@ def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optio
     # Generar topología ordenada con P01 al norte, sentido horario y rumbos calculados
     reconstruir_topologia_predio(db, predio_id, colindantes, rumbos)
 
+
+from pydantic import BaseModel
+from typing import Optional
+
+class ConflictCheckRequest(BaseModel):
+    cod_catastral: Optional[str] = None
+    geojson: Optional[dict] = None
+    es_utm: Optional[bool] = True
+    empresa_id: Optional[int] = None
+
+@router.post("/predios/verificar-conflicto")
+async def check_predio_conflict(req: ConflictCheckRequest, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+    """
+    Verifica si existe un predio con el mismo código catastral en la base central.
+    """
+    resultado = {
+        "conflicto": False,
+        "tipo": None,
+        "predio_existente": None
+    }
+
+    if req.cod_catastral and req.cod_catastral.strip():
+        cod = req.cod_catastral.strip()
+        existente = db.execute(text("""
+            SELECT p.id, p.cod_catastral, p.area_ha, p.creador_nombre, p.fecha_creacion,
+                   pos.nombre as posesionario_nombre
+            FROM catastro.predio p
+            LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
+            WHERE p.cod_catastral = :cod
+            LIMIT 1
+        """), {"cod": cod}).fetchone()
+
+        if existente:
+            resultado["conflicto"] = True
+            resultado["tipo"] = "CODIGO_DUPLICADO"
+            resultado["predio_existente"] = {
+                "id": existente[0],
+                "cod_catastral": existente[1],
+                "area_ha": float(existente[2] or 0.0),
+                "creador": existente[3] or "Sistema",
+                "fecha": str(existente[4]) if existente[4] else None,
+                "posesionario": existente[5] or "Sin Posesionario"
+            }
+            return resultado
+
+    return resultado
+
 @router.post("/predios", status_code=status.HTTP_201_CREATED)
 async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
@@ -256,9 +303,16 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     id_cant = getattr(dpa_res, "id_canton", None) if dpa_res else None
     id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None
 
+    is_brig = getattr(current_user, 'is_brigadista', False) or getattr(current_user, 'role', '') == 'brigadista'
+    tipo_creador = 'BRIGADISTA' if is_brig else 'REGISTRADO'
+    op_id = getattr(current_user, 'operador_temporal_id', None)
+    creador_nom = getattr(current_user, 'nombre', None) or getattr(current_user, 'username', 'Desconocido')
+    if is_brig and not str(creador_nom).endswith('(Brigadista)'):
+        creador_nom = f"{creador_nom} (Brigadista)"
+
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por, operador_temporal_id, tipo_creador, creador_nombre)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por, :op_id, :tipo_creador, :creador_nom)
         RETURNING id;
     """)
     try:
@@ -271,7 +325,10 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "id_provincia": id_prov,
             "id_canton": id_cant,
             "id_ciudad": id_ciud,
-            "creado_por": user_id
+            "creado_por": user_id,
+            "op_id": op_id,
+            "tipo_creador": tipo_creador,
+            "creador_nom": creador_nom
         })
         new_id = result.scalar()
         
@@ -2269,6 +2326,9 @@ async def fraccionar_predio(
             "id_canton": matriz.get("id_canton"),
             "id_ciudad": matriz.get("id_ciudad"),
             "creado_por": user_id,
+            "op_id": op_id,
+            "tipo_creador": tipo_creador,
+            "creador_nom": creador_nom,
             "predio_padre_id": req.matrizId,
             "fecha_creacion": next_fiscal_year
         })
@@ -2304,6 +2364,9 @@ async def fraccionar_predio(
             "id_canton": matriz.get("id_canton"),
             "id_ciudad": matriz.get("id_ciudad"),
             "creado_por": user_id,
+            "op_id": op_id,
+            "tipo_creador": tipo_creador,
+            "creador_nom": creador_nom,
             "predio_padre_id": req.matrizId,
             "fecha_creacion": next_fiscal_year
         })
