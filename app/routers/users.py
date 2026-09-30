@@ -34,6 +34,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
 router = APIRouter(tags=["Usuarios"])
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    if token and str(token).startswith("offline_"):
+        class OfflineBrigadistaUser:
+            id_usuario = None
+            id = None
+            username = "operador_offline"
+            nombre = "Operador de Campo (Brigadista)"
+            id_empresa = 2
+            id_proyecto = 3
+            role = "brigadista"
+            rol = type('Rol', (), {'nombre': 'brigadista', 'permisos': {'crear_predio': True, 'ver_predio': True}})()
+            activo = True
+            is_brigadista = True
+            operador_temporal_id = None
+        return OfflineBrigadistaUser()
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

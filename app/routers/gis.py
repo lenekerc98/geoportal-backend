@@ -140,7 +140,31 @@ async def create_posesionario(pos: schemas.PosesionarioBase, db: Session = Depen
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/posesionarios/buscar/{cedula}", response_model=schemas.Posesionario)
+@router.get("/posesionarios")
+async def listar_posesionarios(
+    empresa_id: Optional[int] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db), 
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Listar posesionarios para caché y autocompletado en la aplicación móvil y geoportal.
+    """
+    target_emp_id = empresa_id or getattr(current_user, 'id_empresa', 2)
+    sql = "SELECT id, cedula, nombre FROM catastro.posesionario WHERE 1=1"
+    params = {}
+    if target_emp_id:
+        sql += " AND (empresa_id = :emp_id OR empresa_id IS NULL)"
+        params["emp_id"] = target_emp_id
+    if q and q.strip():
+        sql += " AND (cedula ILIKE :q OR nombre ILIKE :q)"
+        params["q"] = f"%{q.strip()}%"
+    sql += " ORDER BY nombre ASC LIMIT 2000"
+    
+    rows = db.execute(text(sql), params).mappings().all()
+    return [dict(r) for r in rows]
+
+@router.get("/posesionarios/buscar/{cedula}")
 async def buscar_posesionario(cedula: str, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
     Buscar un posesionario por su cédula para autocompletar formularios.
