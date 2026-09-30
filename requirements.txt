@@ -32,3 +32,6 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.49.0
 boto3==1.34.144
+shapely>=2.0.0
+GeoAlchemy2>=0.14.0
+ezdxf>=1.1.0
