@@ -25,7 +25,7 @@ from app.core.catalogacion_service import run_catalogacion_masiva
 from app.core.logger import log_audit
 import threading
 import json
-from app.services.shapefile_service import procesar_shapefile, analizar_shapefile, confirmar_importacion_shapefile
+from app.services.shapefile_service import procesar_shapefile, analizar_shapefile, confirmar_importacion_shapefile, reconstruir_topologia_predio
 
 from app.core.file_utils import check_path_exists, get_gdal_path, is_s3_path
 
@@ -168,74 +168,9 @@ async def buscar_codigo(codigo: str, db: Session = Depends(get_db), current_user
     return dict(result)
 
 def _generar_vertices_y_linderos(db: Session, predio_id: int, colindantes: Optional[List[str]] = None, rumbos: Optional[List[str]] = None):
-    # Primero limpiar si ya existen (para updates)
-    db.execute(text("DELETE FROM catastro.vertice WHERE predio_id = :id"), {"id": predio_id})
-    db.execute(text("DELETE FROM catastro.linea_lindero WHERE predio_id = :id"), {"id": predio_id})
-    
-    # Extraer vértices y guardarlos
-    query_puntos = text("""
-        INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
-        SELECT 
-            p.id, 
-            CASE WHEN EXISTS (SELECT 1 FROM catastro.codigo_catastral cc WHERE cc.codigo = p.cod_catastral) THEN p.cod_catastral ELSE NULL END, 
-            'P' || LPAD(i::text, 2, '0'),
-            ST_X(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i)),
-            ST_Y(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i)),
-            ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i),
-            p.empresa_id
-        FROM catastro.predio p
-        CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(p.geom, 1))) - 1) as i
-        WHERE p.id = :id
-    """)
-    db.execute(query_puntos, {"id": predio_id})
+    # Generar topología ordenada con P01 al norte, sentido horario y rumbos calculados
+    reconstruir_topologia_predio(db, predio_id, colindantes, rumbos)
 
-    # Extraer líneas (linderos) con detección automática de colindantes
-    query_lineas = text("""
-        INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, rumbo, colindante, geom, empresa_id)
-        SELECT 
-            p.id, 
-            CASE WHEN EXISTS (SELECT 1 FROM catastro.codigo_catastral cc WHERE cc.codigo = p.cod_catastral) THEN p.cod_catastral ELSE NULL END,
-            ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1))),
-            catastro.calcular_rumbo(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
-            COALESCE((
-                SELECT COALESCE(pos.nombre, p2.cod_catastral, 'S/D')
-                FROM catastro.predio p2
-                LEFT JOIN catastro.posesionario pos ON p2.posesionario_id = pos.id
-                WHERE p2.id != p.id 
-                  AND ST_DWithin(
-                      ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
-                      p2.geom, 
-                      0.5
-                  )
-                LIMIT 1
-            ), ''), -- Autodetección de colindante
-            ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(p.geom, 1)), i+1)),
-            p.empresa_id
-        FROM catastro.predio p
-        CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(p.geom, 1))) - 1) as i
-        WHERE p.id = :id
-    """)
-    db.execute(query_lineas, {"id": predio_id})
-
-    # Actualizar nombres de colindantes si se proporcionan
-    if colindantes and len(colindantes) > 0:
-        linderos_db = db.execute(text("SELECT id FROM catastro.linea_lindero WHERE predio_id = :id ORDER BY id ASC"), {"id": predio_id}).fetchall()
-        for idx, row in enumerate(linderos_db):
-            if idx < len(colindantes) and colindantes[idx]:
-                db.execute(
-                    text("UPDATE catastro.linea_lindero SET colindante = :col WHERE id = :lid"),
-                    {"col": colindantes[idx], "lid": row.id}
-                )
-    
-    # Actualizar rumbos si se proporcionan (sobreescribe los calculados)
-    if rumbos and len(rumbos) > 0:
-        linderos_db = db.execute(text("SELECT id FROM catastro.linea_lindero WHERE predio_id = :id ORDER BY id ASC"), {"id": predio_id}).fetchall()
-        for idx, row in enumerate(linderos_db):
-            if idx < len(rumbos) and rumbos[idx]:
-                db.execute(
-                    text("UPDATE catastro.linea_lindero SET rumbo = :rum WHERE id = :lid"),
-                    {"rum": rumbos[idx], "lid": row.id}
-                )
 @router.post("/predios", status_code=status.HTTP_201_CREATED)
 async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
@@ -588,6 +523,65 @@ async def get_lineas_geojson(
             detail=f"Error al obtener linderos: {str(e)}"
         )
 
+def _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows):
+    if not vertices_rows or len(vertices_rows) < 3:
+        return vertices_rows, linderos_rows
+    
+    verts = [dict(v) for v in vertices_rows]
+    lins = [dict(l) for l in linderos_rows]
+    n = len(verts)
+    
+    # 1. Signed area
+    signed_area = 0.0
+    for i in range(n):
+        x1, y1 = float(verts[i].get('coord_x') or 0), float(verts[i].get('coord_y') or 0)
+        x2, y2 = float(verts[(i + 1) % n].get('coord_x') or 0), float(verts[(i + 1) % n].get('coord_y') or 0)
+        signed_area += (x1 * y2 - x2 * y1)
+    signed_area *= 0.5
+    is_clockwise = signed_area < 0
+    
+    # 2. Leftmost
+    leftmost_idx = 0
+    min_x = float(verts[0].get('coord_x') or 0)
+    max_y = float(verts[0].get('coord_y') or 0)
+    for i in range(1, n):
+        x = float(verts[i].get('coord_x') or 0)
+        y = float(verts[i].get('coord_y') or 0)
+        if x < min_x - 1e-4:
+            min_x = x
+            max_y = y
+            leftmost_idx = i
+        elif abs(x - min_x) <= 1e-4 and y > max_y:
+            max_y = y
+            leftmost_idx = i
+            
+    ordered_verts = []
+    ordered_lins = []
+    if is_clockwise:
+        for i in range(n):
+            idx = (leftmost_idx + i) % n
+            ordered_verts.append(verts[idx])
+            if idx < len(lins):
+                ordered_lins.append(lins[idx])
+    else:
+        for i in range(n):
+            idx = (leftmost_idx - i + n) % n
+            ordered_verts.append(verts[idx])
+            lin_idx = (idx - 1 + n) % n
+            if lin_idx < len(lins):
+                ordered_lins.append(lins[lin_idx])
+                
+    prefix = 'V' if (ordered_verts[0].get('codigo') or '').startswith('V') else 'P'
+    for i, v in enumerate(ordered_verts):
+        v['codigo'] = f"{prefix}{str(i+1).zfill(2)}"
+        
+    for i in range(len(ordered_lins)):
+        curr_code = ordered_verts[i]['codigo']
+        next_code = ordered_verts[(i+1)%n]['codigo']
+        ordered_lins[i]['tramo'] = f"{curr_code} - {next_code}"
+        
+    return ordered_verts, ordered_lins
+
 @router.get("/predios/detalle/{cod_catastral}", response_model=schemas.PredioDetalleEspacial)
 async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
@@ -627,6 +621,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         ORDER BY id
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+    vertices_rows, linderos_rows = _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows)
     
     # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
     final_cod_carta = predio_row["codigo_carta"]
@@ -733,6 +728,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         ORDER BY id
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+    vertices_rows, linderos_rows = _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows)
     
     # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
     final_cod_carta = predio_row["codigo_carta"]

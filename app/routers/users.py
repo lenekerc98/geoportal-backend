@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
 from jose import JWTError, jwt
 from typing import List
 import os
@@ -80,20 +80,58 @@ async def read_roles(db: Session = Depends(get_db), current_user: Usuario = Depe
     """
     Obtener la lista de roles del sistema.
     """
-    return db.query(Rol).all()
+    return db.query(Rol).order_by(Rol.id_rol).all()
+
+@router.post("/roles", response_model=schemas.RolSchema, status_code=status.HTTP_201_CREATED)
+async def create_role(role_in: schemas.RolCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Crear un nuevo rol en el sistema (solo Administrador o Superadmin).
+    """
+    is_admin_or_superadmin_user(current_user)
+    
+    clean_name = role_in.nombre.strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="El nombre del rol no puede estar vacío")
+        
+    existing = db.query(Rol).filter(func.lower(Rol.nombre) == clean_name.lower()).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Ya existe un rol con el nombre '{clean_name}'")
+        
+    new_role = Rol(
+        nombre=clean_name,
+        descripcion=role_in.descripcion.strip() if role_in.descripcion else "",
+        permisos=role_in.permisos or {}
+    )
+    db.add(new_role)
+    try:
+        db.commit()
+        db.refresh(new_role)
+        return new_role
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al crear el rol: {str(e)}")
 
 @router.put("/roles/{id_rol}", response_model=schemas.RolSchema)
 async def update_role(id_rol: int, role_update: schemas.RolUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     """
-    Actualizar permisos o descripción de un rol (solo superadmin).
+    Actualizar permisos o descripción de un rol (solo Superadmin o Admin).
     """
-    is_superadmin_user(current_user)
+    is_admin_or_superadmin_user(current_user)
     db_role = db.query(Rol).filter(Rol.id_rol == id_rol).first()
     if not db_role:
         raise HTTPException(status_code=404, detail="Rol no encontrado")
+
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    if cur_role in ["admin", "administrador"] and db_role.nombre.lower() in ["superadmin", "superadministrador"]:
+        raise HTTPException(status_code=403, detail="Un Administrador no puede modificar los permisos del Superadministrador.")
         
     if role_update.nombre is not None:
-        db_role.nombre = role_update.nombre
+        clean_name = role_update.nombre.strip()
+        if clean_name and clean_name.lower() != db_role.nombre.lower():
+            existing = db.query(Rol).filter(func.lower(Rol.nombre) == clean_name.lower(), Rol.id_rol != id_rol).first()
+            if existing:
+                raise HTTPException(status_code=400, detail=f"Ya existe otro rol con el nombre '{clean_name}'")
+            db_role.nombre = clean_name
     if role_update.descripcion is not None:
         db_role.descripcion = role_update.descripcion
     if role_update.permisos is not None:
@@ -102,6 +140,39 @@ async def update_role(id_rol: int, role_update: schemas.RolUpdate, db: Session =
     db.commit()
     db.refresh(db_role)
     return db_role
+
+@router.delete("/roles/{id_rol}", status_code=status.HTTP_200_OK)
+async def delete_role(id_rol: int, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    """
+    Eliminar un rol personalizado (no se permite eliminar roles base del sistema).
+    """
+    is_admin_or_superadmin_user(current_user)
+    
+    if id_rol in [1, 2, 3]:
+        raise HTTPException(status_code=400, detail="No se pueden eliminar los roles base del sistema (Superadministrador, Administrador, Usuario).")
+        
+    db_role = db.query(Rol).filter(Rol.id_rol == id_rol).first()
+    if not db_role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado")
+        
+    if db_role.nombre.lower() in ["superadmin", "superadministrador", "admin", "administrador", "usuario"]:
+        raise HTTPException(status_code=400, detail="No se pueden eliminar los roles predeterminados del sistema.")
+        
+    users_with_role = db.query(Usuario).filter(Usuario.id_rol == id_rol).count()
+    if users_with_role > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"No se puede eliminar el rol porque tiene {users_with_role} usuario(s) asignado(s). Reasigne primero los usuarios a otro rol."
+        )
+        
+    try:
+        nombre_eliminado = db_role.nombre
+        db.delete(db_role)
+        db.commit()
+        return {"detail": f"Rol '{nombre_eliminado}' eliminado correctamente", "id_rol": id_rol}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar el rol: {str(e)}")
 
 # --- CRUD de Usuarios ---
 

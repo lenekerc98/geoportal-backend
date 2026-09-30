@@ -1,4 +1,4 @@
-from app.schemas.user import Token, TokenData, UsuarioBase, UsuarioCreate, Usuario, UsuarioUpdate, RolSchema, RolUpdate
+from app.schemas.user import Token, TokenData, UsuarioBase, UsuarioCreate, Usuario, UsuarioUpdate, RolSchema, RolCreate, RolUpdate
 from app.schemas.gis import (
     Posesionario, PosesionarioBase, Vertice, Lindero, Predio, 
     PredioDetalleEspacial, GeoJSONFeatureCollection,

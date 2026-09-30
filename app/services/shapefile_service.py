@@ -8,7 +8,214 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
 from typing import Dict, Any, List, Optional
+import math
+from shapely import wkt
+import shapely
 
+
+
+def calcular_rumbo_py(x1: float, y1: float, x2: float, y2: float) -> Optional[str]:
+    """Calcula el rumbo topográfico de la línea (x1,y1) -> (x2,y2) en formato N/S dd° mm' ss" E/W"""
+    dx = x2 - x1
+    dy = y2 - y1
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return None
+    azimuth_rad = math.atan2(dx, dy)
+    if azimuth_rad < 0:
+        azimuth_rad += 2 * math.pi
+    azimuth_deg = math.degrees(azimuth_rad)
+    
+    if 0 <= azimuth_deg <= 90:
+        quadrant = "NE"
+        rumbo_deg = azimuth_deg
+    elif 90 < azimuth_deg <= 180:
+        quadrant = "SE"
+        rumbo_deg = 180.0 - azimuth_deg
+    elif 180 < azimuth_deg <= 270:
+        quadrant = "SW"
+        rumbo_deg = azimuth_deg - 180.0
+    else:
+        quadrant = "NW"
+        rumbo_deg = 360.0 - azimuth_deg
+        
+    d = int(math.floor(rumbo_deg))
+    m = int(math.floor((rumbo_deg - d) * 60.0))
+    s = round(((rumbo_deg - d) * 60.0 - m) * 60.0)
+    if s == 60:
+        s = 0
+        m += 1
+    if m == 60:
+        m = 0
+        d += 1
+        
+    return f"{quadrant[0]} {d}° {m}' {s}\" {quadrant[1]}"
+
+
+def procesar_topologia_predio(geom_wkt: str):
+    """
+    Dada la geometría WKT en EPSG:32717 UTM:
+    1. Obtiene el polígono principal.
+    2. Extrae los vértices del anillo exterior sin repetición del último vértice.
+    3. Asegura el sentido horario (CW): de izquierda a derecha en el norte.
+    4. Identifica el vértice P01: el punto más al norte (mayor Y). Si hay empate, el más a la izquierda (menor X).
+    5. Reordena la lista empezando en P01 en sentido horario.
+    6. Retorna:
+       - vertices: list of dict(codigo='P01', coord_x=..., coord_y=...)
+       - linderos: list of dict(tramo='P01 - P02', x1=..., y1=..., x2=..., y2=..., longitud=..., rumbo=...)
+    """
+    try:
+        geom = wkt.loads(geom_wkt)
+    except Exception as e:
+        logging.warning(f"Error parseando WKT: {e}")
+        return [], []
+
+    if geom.geom_type == 'MultiPolygon':
+        poly = max(geom.geoms, key=lambda p: p.area)
+    elif geom.geom_type == 'Polygon':
+        poly = geom
+    else:
+        return [], []
+
+    raw_coords = list(poly.exterior.coords)
+    if len(raw_coords) < 4:
+        return [], []
+
+    coords = raw_coords[:-1]
+
+    # Sentido horario (Clockwise)
+    if shapely.is_ccw(poly.exterior):
+        coords.reverse()
+
+    # P01: mayor Y (más al norte), y menor X en empate (más a la izquierda)
+    best_idx = 0
+    best_key = (-round(coords[0][1], 4), round(coords[0][0], 4))
+    for idx, (x, y) in enumerate(coords):
+        key = (-round(y, 4), round(x, 4))
+        if key < best_key:
+            best_key = key
+            best_idx = idx
+
+    rotated = coords[best_idx:] + coords[:best_idx]
+    n = len(rotated)
+
+    vertices_list = []
+    linderos_list = []
+
+    for i in range(n):
+        p1 = rotated[i]
+        p2 = rotated[(i + 1) % n]
+        cod_v = f"P{i+1:02d}"
+        cod_v_next = f"P{((i+1)%n)+1:02d}"
+        tramo = f"{cod_v} - {cod_v_next}"
+        
+        dist = math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+        rumbo = calcular_rumbo_py(p1[0], p1[1], p2[0], p2[1])
+
+        vertices_list.append({
+            "codigo": cod_v,
+            "coord_x": round(p1[0], 4),
+            "coord_y": round(p1[1], 4),
+        })
+
+        linderos_list.append({
+            "tramo": tramo,
+            "x1": round(p1[0], 4),
+            "y1": round(p1[1], 4),
+            "x2": round(p2[0], 4),
+            "y2": round(p2[1], 4),
+            "longitud": round(dist, 4),
+            "rumbo": rumbo
+        })
+
+    return vertices_list, linderos_list
+
+
+def reconstruir_topologia_predio(
+    db: Session, 
+    predio_id: int, 
+    colindantes: Optional[List[str]] = None, 
+    rumbos: Optional[List[str]] = None
+) -> Dict[str, int]:
+    """
+    Regenera los vértices y linderos del predio indicado:
+    - P01 como vértice más al norte (y a la izquierda en caso de empate).
+    - Recorrido en sentido horario (CW).
+    - Nomenclatura P01, P02...
+    - Cálculo de rumbo topográfico y tramo para cada lindero.
+    """
+    predio_row = db.execute(
+        text("SELECT id, cod_catastral, empresa_id, ST_AsText(geom) as geom_wkt FROM catastro.predio WHERE id = :pid"),
+        {"pid": predio_id}
+    ).mappings().first()
+
+    if not predio_row or not predio_row["geom_wkt"]:
+        return {"vertices_creados": 0, "lineas_creadas": 0}
+
+    cod_catastral = predio_row["cod_catastral"]
+    empresa_id = predio_row["empresa_id"]
+    geom_wkt = predio_row["geom_wkt"]
+
+    vertices_list, linderos_list = procesar_topologia_predio(geom_wkt)
+    if not vertices_list:
+        return {"vertices_creados": 0, "lineas_creadas": 0}
+
+    # Limpiar vértices y linderos anteriores
+    db.execute(text("DELETE FROM catastro.vertice WHERE predio_id = :pid"), {"pid": predio_id})
+    db.execute(text("DELETE FROM catastro.linea_lindero WHERE predio_id = :pid"), {"pid": predio_id})
+
+    # Insertar Vértices en lote
+    q_vert = text("""
+        INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
+        VALUES (:pid, :cod, :codigo, :x, :y, ST_SetSRID(ST_MakePoint(:x, :y), 32717), :emp_id)
+    """)
+    v_params = [
+        {
+            "pid": predio_id,
+            "cod": cod_catastral,
+            "codigo": v["codigo"],
+            "x": v["coord_x"],
+            "y": v["coord_y"],
+            "emp_id": empresa_id
+        }
+        for v in vertices_list
+    ]
+    if v_params:
+        db.execute(q_vert, v_params)
+
+    # Insertar Linderos en lote
+    q_lin = text("""
+        INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, rumbo, tramo, colindante, geom, empresa_id)
+        VALUES (:pid, :cod, :longitud, :rumbo, :tramo, :colindante, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), :emp_id)
+    """)
+    l_params = []
+    for idx, l in enumerate(linderos_list):
+        val_col = ""
+        if colindantes and idx < len(colindantes) and colindantes[idx]:
+            val_col = str(colindantes[idx]).strip()
+        val_rumbo = l["rumbo"]
+        if rumbos and idx < len(rumbos) and rumbos[idx]:
+            val_rumbo = str(rumbos[idx]).strip()
+
+        l_params.append({
+            "pid": predio_id,
+            "cod": cod_catastral,
+            "longitud": l["longitud"],
+            "rumbo": val_rumbo,
+            "tramo": l["tramo"],
+            "colindante": val_col,
+            "x1": l["x1"],
+            "y1": l["y1"],
+            "x2": l["x2"],
+            "y2": l["y2"],
+            "emp_id": empresa_id
+        })
+    if l_params:
+        db.execute(q_lin, l_params)
+
+    return {
+        "vertices_creados": len(vertices_list),
+        "lineas_creadas": len(linderos_list)
+    }
 
 def resolver_contexto_empresa_proyecto(db: Session, empresa_id: Optional[int], proyecto_id: Optional[int] = None):
     """
@@ -451,38 +658,10 @@ def procesar_shapefile(
                         predio_id = res_predio["id"]
                         resultados["predios_creados"] += 1
                         
-                        # 6.3 Topología: Vértices (Puntos)
-                        q_vertices = text("""
-                            INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
-                            SELECT 
-                                :predio_id, :codigo, 
-                                'V' || LPAD(i::text, 2, '0'),
-                                ST_X(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                                ST_Y(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                                ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i),
-                                :emp_id
-                            FROM catastro.predio
-                            CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                            WHERE id = :predio_id
-                        """)
-                        res_vert = db.execute(q_vertices, {"predio_id": predio_id, "codigo": codigo_asignar, "emp_id": empresa_id})
-                        resultados["vertices_creados"] += res_vert.rowcount
-                        
-                        # 6.4 Topología: Linderos (Líneas)
-                        q_lineas = text("""
-                            INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, colindante, geom, empresa_id)
-                            SELECT 
-                                :predio_id, :codigo, 
-                                ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1))),
-                                '',
-                                ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1)),
-                                :emp_id
-                            FROM catastro.predio
-                            CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                            WHERE id = :predio_id
-                        """)
-                        res_lin = db.execute(q_lineas, {"predio_id": predio_id, "codigo": codigo_asignar, "emp_id": empresa_id})
-                        resultados["lineas_creadas"] += res_lin.rowcount
+                        # 6.3 y 6.4 Topología ordenada (P01 al norte, horario, rumbos)
+                        top_res = reconstruir_topologia_predio(db, predio_id)
+                        resultados["vertices_creados"] += top_res["vertices_creados"]
+                        resultados["lineas_creadas"] += top_res["lineas_creadas"]
             except Exception as row_err:
                 logging.error(f"Error procesando fila {fila['id']} del shapefile: {row_err}")
                 continue
@@ -983,40 +1162,10 @@ def confirmar_importacion_shapefile(
                         "id_cant": row_id_cant
                     })
 
-                    # Regenerar vértices y linderos
-                    db.execute(text("DELETE FROM catastro.vertice WHERE predio_id = :pid"), {"pid": target_id})
-                    db.execute(text("DELETE FROM catastro.linea_lindero WHERE predio_id = :pid"), {"pid": target_id})
-
-                    q_vert = text("""
-                        INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
-                        SELECT 
-                            :pid, :cod, 'V' || LPAD(i::text, 2, '0'),
-                            ST_X(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                            ST_Y(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                            ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i),
-                            :emp_id
-                        FROM catastro.predio
-                        CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                        WHERE id = :pid
-                    """)
-                    res_v = db.execute(q_vert, {"pid": target_id, "cod": final_cod, "emp_id": empresa_id})
-                    resultados["vertices_creados"] += res_v.rowcount
-
-                    q_lin = text("""
-                        INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, colindante, geom, empresa_id)
-                        SELECT 
-                            :pid, :cod,
-                            ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1))),
-                            '',
-                            ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1)),
-                            :emp_id
-                        FROM catastro.predio
-                        CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                        WHERE id = :pid
-                    """)
-                    res_l = db.execute(q_lin, {"pid": target_id, "cod": final_cod, "emp_id": empresa_id})
-                    resultados["lineas_creadas"] += res_l.rowcount
-
+                    # Regenerar vértices y linderos ordenados (P01 al norte, horario, rumbos)
+                    top_res = reconstruir_topologia_predio(db, target_id)
+                    resultados["vertices_creados"] += top_res["vertices_creados"]
+                    resultados["lineas_creadas"] += top_res["lineas_creadas"]
                     resultados["predios_reemplazados"] += 1
 
         # 2. Procesar predios nuevos seleccionados
@@ -1102,37 +1251,10 @@ def confirmar_importacion_shapefile(
                 new_id = new_predio["id"]
                 resultados["predios_creados"] += 1
 
-                # Vértices
-                q_vert = text("""
-                    INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
-                    SELECT 
-                        :pid, :cod, 'V' || LPAD(i::text, 2, '0'),
-                        ST_X(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                        ST_Y(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i)),
-                        ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i),
-                        :emp_id
-                    FROM catastro.predio
-                    CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                    WHERE id = :pid
-                """)
-                res_v = db.execute(q_vert, {"pid": new_id, "cod": val_cod, "emp_id": empresa_id})
-                resultados["vertices_creados"] += res_v.rowcount
-
-                # Linderos
-                q_lin = text("""
-                    INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, colindante, geom, empresa_id)
-                    SELECT 
-                        :pid, :cod,
-                        ST_Length(ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1))),
-                        '',
-                        ST_MakeLine(ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i), ST_PointN(ST_ExteriorRing(ST_GeometryN(geom, 1)), i+1)),
-                        :emp_id
-                    FROM catastro.predio
-                    CROSS JOIN generate_series(1, ST_NumPoints(ST_ExteriorRing(ST_GeometryN(geom, 1))) - 1) as i
-                    WHERE id = :pid
-                """)
-                res_l = db.execute(q_lin, {"pid": new_id, "cod": val_cod, "emp_id": empresa_id})
-                resultados["lineas_creadas"] += res_l.rowcount
+                # Topología ordenada (P01 al norte, horario, rumbos)
+                top_res = reconstruir_topologia_predio(db, new_id)
+                resultados["vertices_creados"] += top_res["vertices_creados"]
+                resultados["lineas_creadas"] += top_res["lineas_creadas"]
 
         # Limpiar tabla staging
         db.execute(text(f"DROP TABLE IF EXISTS {staging_table} CASCADE"))

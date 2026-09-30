@@ -17,6 +17,11 @@ class RolSchema(BaseModel):
     class Config:
         from_attributes = True
 
+class RolCreate(BaseModel):
+    nombre: str
+    descripcion: Optional[str] = None
+    permisos: Optional[dict] = None
+
 class RolUpdate(BaseModel):
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
