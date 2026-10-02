@@ -2,6 +2,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import timedelta
 
 from app.core.database import get_db
@@ -17,7 +18,8 @@ router = APIRouter(tags=["Autenticación"])
 @router.post("/token", response_model=schemas.Token)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     # Buscar el usuario en la base de datos
-    user = db.query(Usuario).filter(Usuario.username == form_data.username).first()
+    clean_username = form_data.username.strip()
+    user = db.query(Usuario).filter(func.lower(Usuario.username) == func.lower(clean_username)).first()
     
     # Verificar credenciales
     if not user or not security.verify_password(form_data.password, user.password_hash):
@@ -30,7 +32,8 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     
     if not user.activo:
         raise HTTPException(status_code=400, detail="Usuario inactivo")
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    token_minutes = max(ACCESS_TOKEN_EXPIRE_MINUTES, 43200)
+    access_token_expires = timedelta(minutes=token_minutes)
     
     # Obtener el nombre del rol y permisos para incluirlos en el token
     role_name = user.rol.nombre if user.rol else "user"

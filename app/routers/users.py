@@ -59,10 +59,16 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión expirada. Por favor inicie sesión nuevamente.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except JWTError:
         raise credentials_exception
         
-    user = db.query(Usuario).filter(Usuario.username == username).first()
+    user = db.query(Usuario).filter(func.lower(Usuario.username) == func.lower(username)).first()
     if user is None:
         if payload.get("role") == "brigadista":
             op_id = payload.get("operador_temporal_id")

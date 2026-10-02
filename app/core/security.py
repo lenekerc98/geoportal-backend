@@ -15,7 +15,8 @@ if not SECRET_KEY:
     warnings.warn("SECRET_KEY no configurada en .env. Se está usando una clave fija de desarrollo.")
 
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+# 30 dias por defecto (43200 min) para operaciones de campo
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "43200"))
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
