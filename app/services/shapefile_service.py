@@ -86,14 +86,29 @@ def procesar_topologia_predio(geom_wkt: str):
     if shapely.is_ccw(poly.exterior):
         coords.reverse()
 
-    # P01: mayor Y (más al norte), y menor X en empate (más a la izquierda)
+    # P01: Vértice Nor-Oeste (NW) de acuerdo a la norma catastral y topográfica.
+    # Normalizamos en el Bounding Box: normY maximiza el Norte [0, 1] y normX minimiza el Este [0, 1].
+    # Score = normY - normX (el vértice que esté más al norte de izquierda a derecha).
+    min_x = min(c[0] for c in coords)
+    max_x = max(c[0] for c in coords)
+    min_y = min(c[1] for c in coords)
+    max_y = max(c[1] for c in coords)
+    span_x = (max_x - min_x) if (max_x - min_x) > 1e-6 else 1.0
+    span_y = (max_y - min_y) if (max_y - min_y) > 1e-6 else 1.0
+
     best_idx = 0
-    best_key = (-round(coords[0][1], 4), round(coords[0][0], 4))
+    best_score = -float('inf')
     for idx, (x, y) in enumerate(coords):
-        key = (-round(y, 4), round(x, 4))
-        if key < best_key:
-            best_key = key
+        norm_x = (x - min_x) / span_x
+        norm_y = (y - min_y) / span_y
+        score = norm_y - norm_x
+        if score > best_score + 1e-5:
+            best_score = score
             best_idx = idx
+        elif abs(score - best_score) <= 1e-5:
+            cur_x, cur_y = coords[best_idx]
+            if y > cur_y or (abs(y - cur_y) <= 1e-5 and x < cur_x):
+                best_idx = idx
 
     rotated = coords[best_idx:] + coords[:best_idx]
     n = len(rotated)

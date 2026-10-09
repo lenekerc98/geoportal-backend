@@ -249,27 +249,45 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     """
     import json
     
-    # Lógica de reordenamiento de polígono (P01 más al norte y sentido horario)
+    # Lógica de reordenamiento de polígono (P01 Nor-Oeste y sentido horario)
     if predio.geom_geojson and predio.geom_geojson.get("type") == "Polygon":
         coords = predio.geom_geojson.get("coordinates", [[]])[0]
-        if len(coords) > 1:
+        if len(coords) > 2:
             # Eliminar último punto si es igual al primero
             if coords[0] == coords[-1]:
                 coords.pop()
-            # Encontrar el punto más al norte (max latitud/Y)
-            max_y_idx = max(range(len(coords)), key=lambda i: coords[i][1])
-            new_coords = coords[max_y_idx:] + coords[:max_y_idx]
-            
-            # Calcular área signada para verificar sentido horario
-            # (Si es > 0, es antihorario, por lo que revertimos)
+
+            # 1. Asegurar sentido horario (área signada > 0 es antihorario)
             def signed_area(pts):
-                pts_closed = pts + [pts[0]]
-                return sum(pts_closed[i][0] * pts_closed[i+1][1] - pts_closed[i+1][0] * pts_closed[i][1] for i in range(len(pts_closed)-1)) / 2.0
-                
-            if signed_area(new_coords) > 0:
-                # Revertir manteniendo el primero en su lugar
-                new_coords = [new_coords[0]] + new_coords[1:][::-1]
-                
+                pts_c = pts + [pts[0]]
+                return sum(pts_c[i][0] * pts_c[i+1][1] - pts_c[i+1][0] * pts_c[i][1] for i in range(len(pts_c)-1)) / 2.0
+
+            if signed_area(coords) > 0:
+                coords.reverse()
+
+            # 2. Vértice Nor-Oeste (NW): maximiza normY - normX
+            min_x = min(c[0] for c in coords)
+            max_x = max(c[0] for c in coords)
+            min_y = min(c[1] for c in coords)
+            max_y = max(c[1] for c in coords)
+            span_x = (max_x - min_x) if (max_x - min_x) > 1e-6 else 1.0
+            span_y = (max_y - min_y) if (max_y - min_y) > 1e-6 else 1.0
+
+            best_idx = 0
+            best_score = -float('inf')
+            for idx, (x, y) in enumerate(coords):
+                norm_x = (x - min_x) / span_x
+                norm_y = (y - min_y) / span_y
+                score = norm_y - norm_x
+                if score > best_score + 1e-5:
+                    best_score = score
+                    best_idx = idx
+                elif abs(score - best_score) <= 1e-5:
+                    cur_x, cur_y = coords[best_idx]
+                    if y > cur_y or (abs(y - cur_y) <= 1e-5 and x < cur_x):
+                        best_idx = idx
+
+            new_coords = coords[best_idx:] + coords[:best_idx]
             new_coords.append(new_coords[0]) # Cerrar
             predio.geom_geojson["coordinates"][0] = new_coords
 
