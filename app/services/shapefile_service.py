@@ -4,6 +4,9 @@ import uuid
 import shutil
 import zipfile
 import subprocess
+import re
+import unicodedata
+import datetime
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
@@ -315,7 +318,8 @@ def procesar_shapefile(
     nombre_capa: str = None,
     user_id: int = None,
     fecha_creacion: str = None,
-    proyecto_id: int = None
+    proyecto_id: int = None,
+    task_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -622,6 +626,7 @@ def procesar_shapefile(
         query_leer += f" FROM {tabla_completa}"
         
         filas = db.execute(text(query_leer)).mappings().all()
+        total_items = len(filas)
         
         for fila in filas:
             try:
@@ -1069,6 +1074,9 @@ def confirmar_importacion_shapefile(
         raise ValueError("Nombre de tabla staging inválido")
 
     try:
+        if not fecha_creacion:
+            fecha_creacion = datetime.date.today().isoformat()
+        resolved_proyecto_id, default_prov, default_cant = resolver_contexto_empresa_proyecto(db, empresa_id, proyecto_id)
         col_rows = db.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{staging_table.split('.')[-1]}'")).fetchall()
         existing_cols = [r[0] for r in col_rows]
         col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
@@ -1117,8 +1125,10 @@ def confirmar_importacion_shapefile(
             "predios_reemplazados": 0,
             "predios_omitidos": 0,
             "predios_creados": 0,
+            "codigos_ajustados": 0,
             "vertices_creados": 0,
-            "lineas_creadas": 0
+            "lineas_creadas": 0,
+            "advertencias": []
         }
 
         total_items = max(1, len(conflict_actions) + len(selected_new_ids))
