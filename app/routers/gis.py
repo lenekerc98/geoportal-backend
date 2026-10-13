@@ -739,8 +739,8 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
                 SELECT c.nombre_archivo, ct.codigo, ct.nombre, ct.cuadricula, ct.escala
                 FROM catastro.capas_cad_cartas c
                 LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
-                WHERE c.geom && (SELECT geom FROM catastro.predio WHERE id = :pid)
-                  AND ST_Intersects(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid))
+                WHERE ST_DWithin(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid), 10000)
+                ORDER BY c.geom <-> (SELECT geom FROM catastro.predio WHERE id = :pid)
                 LIMIT 1
             """)
             inter_row = db.execute(q_intersect, {"pid": predio_id}).mappings().first()
@@ -847,8 +847,8 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
                 SELECT c.nombre_archivo, ct.codigo, ct.nombre, ct.cuadricula, ct.escala
                 FROM catastro.capas_cad_cartas c
                 LEFT JOIN catastro.cartas_topograficas ct ON ct.nombre_archivo = c.nombre_archivo
-                WHERE c.geom && (SELECT geom FROM catastro.predio WHERE id = :pid)
-                  AND ST_Intersects(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid))
+                WHERE ST_DWithin(c.geom, (SELECT geom FROM catastro.predio WHERE id = :pid), 10000)
+                ORDER BY c.geom <-> (SELECT geom FROM catastro.predio WHERE id = :pid)
                 LIMIT 1
             """)
             inter_row = db.execute(q_intersect, {"pid": predio_id}).mappings().first()
