@@ -285,6 +285,26 @@ def resolver_dpa_predio(val_cod: str, default_prov: Optional[int], default_cant:
             logging.warning(f"Error resolviendo DPA por código catastral {val_cod}: {e}")
     return id_prov, id_cant
 
+def get_db_connection_url(db: Session = None) -> str:
+    """
+    Obtiene la URL de conexión PostgreSQL exacta y funcional para ogr2ogr.
+    Prioriza la sesión activa de SQLAlchemy (soporta dinámicamente PROD o TEST), luego variables de entorno.
+    """
+    url = ""
+    if db is not None:
+        try:
+            url = db.bind.url.render_as_string(hide_password=False)
+        except Exception:
+            pass
+    if not url:
+        url = os.getenv("DATABASE_URL_PROD") or os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_TEST") or ""
+    if url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql+psycopg2://", "postgresql://")
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://")
+    return url
+
+
 def procesar_shapefile(
     file_path: str, 
     empresa_id: int,
@@ -357,9 +377,9 @@ def procesar_shapefile(
         schema_raw = "catastro"
         tabla_completa = f"{schema_raw}.{tabla_raw}"
         
-        db_url = os.getenv("DATABASE_URL", "")
-        if db_url.startswith("postgresql+psycopg2://"):
-            db_url = db_url.replace("postgresql+psycopg2://", "postgresql://")
+        db_url = get_db_connection_url(db)
+        if not db_url:
+            raise RuntimeError("No se encontró la cadena de conexión a la base de datos (DATABASE_URL_PROD / DATABASE_URL).")
             
         # Manejo robusto de codificación de caracteres en DBF
         cpg_file = None
@@ -417,12 +437,14 @@ def procesar_shapefile(
             f"PG:{db_url}",
             shp_file,
             *encoding_flags,
-            "-nln", tabla_completa,
+            "-lco", f"SCHEMA={schema_raw}",
+            "-nln", tabla_raw,
             "-lco", "GEOMETRY_NAME=geom",
             "-lco", "FID=id",
             "-lco", "PRECISION=NO",
             "-unsetFieldWidth",
             "-nlt", "PROMOTE_TO_MULTI",
+            "-dim", "2",
             "-overwrite"
         ]
         
@@ -764,9 +786,9 @@ def analizar_shapefile(
         schema_raw = "catastro"
         tabla_completa = f"{schema_raw}.{tabla_staging}"
 
-        db_url = os.getenv("DATABASE_URL", "")
-        if db_url.startswith("postgresql+psycopg2://"):
-            db_url = db_url.replace("postgresql+psycopg2://", "postgresql://")
+        db_url = get_db_connection_url(db)
+        if not db_url:
+            raise RuntimeError("No se encontró la cadena de conexión a la base de datos (DATABASE_URL_PROD / DATABASE_URL).")
 
         detected_encoding = "LATIN1"
         cpg_file = None
@@ -789,21 +811,43 @@ def analizar_shapefile(
             f"PG:{db_url}",
             shp_file,
             "-oo", f"ENCODING={detected_encoding}",
-            "-nln", tabla_completa,
+            "-lco", f"SCHEMA={schema_raw}",
+            "-nln", tabla_staging,
             "-lco", "GEOMETRY_NAME=geom",
             "-lco", "FID=id",
             "-lco", "PRECISION=NO",
             "-unsetFieldWidth",
             "-nlt", "PROMOTE_TO_MULTI",
+            "-dim", "2",
             "-overwrite"
         ]
+        logging.info(f"Ejecutando ogr2ogr en staging ({schema_raw}.{tabla_staging})")
         result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            err_msg = result.stderr.decode('utf-8', errors='replace') if result.stderr else ""
-            raise RuntimeError(f"Error cargando shapefile en staging con ogr2ogr: {err_msg}")
+        stderr_str = result.stderr.decode('utf-8', errors='replace') if result.stderr else ""
+        stdout_str = result.stdout.decode('utf-8', errors='replace') if result.stdout else ""
 
-        # Column resolution
+        # Column resolution y verificación de existencia de tabla staging en catastro
         col_rows = db.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{schema_raw}' AND table_name = '{tabla_staging}'")).fetchall()
+        
+        # Si ogr2ogr la creó en public o con comillas literales, reubicarla a catastro
+        if not col_rows:
+            col_rows_pub = db.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '{tabla_staging}'")).fetchall()
+            if col_rows_pub:
+                db.execute(text(f"ALTER TABLE public.{tabla_staging} SET SCHEMA {schema_raw}"))
+                db.commit()
+                col_rows = col_rows_pub
+            else:
+                col_rows_lit = db.execute(text(f'SELECT column_name FROM information_schema.columns WHERE table_name = \'{tabla_completa}\'')).fetchall()
+                if col_rows_lit:
+                    db.execute(text(f'ALTER TABLE "{tabla_completa}" RENAME TO "{tabla_staging}"'))
+                    db.execute(text(f'ALTER TABLE "{tabla_staging}" SET SCHEMA {schema_raw}'))
+                    db.commit()
+                    col_rows = col_rows_lit
+
+        if result.returncode != 0 or not col_rows:
+            err_msg = stderr_str.strip() or stdout_str.strip() or f"ogr2ogr finalizó con código {result.returncode} pero la tabla {schema_raw}.{tabla_staging} no se creó en la base de datos."
+            logging.error(f"Falla ogr2ogr en staging: {err_msg}")
+            raise RuntimeError(f"Error cargando shapefile en staging con ogr2ogr: {err_msg}")
         existing_cols = [r[0] for r in col_rows]
 
         def normalize_col_key(s: str) -> str:
@@ -852,6 +896,7 @@ def analizar_shapefile(
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
         col_institucion = resolver_columna(mapping.get("institucion"))
+        col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
 
         # Extraer todos los registros de la tabla staging
         q_cols = ["t.id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
@@ -867,6 +912,8 @@ def analizar_shapefile(
         else: q_cols.append("NULL as incoming_tramite")
         if col_institucion: q_cols.append(f'CAST(t."{col_institucion}" AS VARCHAR) as incoming_institucion')
         else: q_cols.append("NULL as incoming_institucion")
+        if col_sector: q_cols.append(f'CAST(t."{col_sector}" AS VARCHAR) as incoming_sector')
+        else: q_cols.append("NULL as incoming_sector")
 
         all_features_q = text(f"SELECT {', '.join(q_cols)} FROM {tabla_completa} t WHERE t.geom IS NOT NULL ORDER BY t.id ASC")
         all_features = [dict(r) for r in db.execute(all_features_q).mappings().all()]
@@ -883,6 +930,7 @@ def analizar_shapefile(
                 p.fecha_adjudicacion as existing_fecha_adju,
                 p.numero_tramite as existing_tramite,
                 p.institucion as existing_institucion,
+                p.sector as existing_sector,
                 ST_Equals(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom) as exact_geom,
                 ROUND((
                     ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)) / 
@@ -942,6 +990,7 @@ def analizar_shapefile(
                     "fecha_adjudicacion": f_in.get("incoming_fecha_adju"),
                     "numero_tramite": f_in.get("incoming_tramite"),
                     "institucion": f_in.get("incoming_institucion"),
+                    "sector": f_in.get("incoming_sector"),
                 },
                 "existing": {
                     "id": row["existing_id"],
@@ -952,6 +1001,7 @@ def analizar_shapefile(
                     "fecha_adjudicacion": row["existing_fecha_adju"],
                     "numero_tramite": row["existing_tramite"],
                     "institucion": row["existing_institucion"],
+                    "sector": row["existing_sector"],
                 },
                 "overlap_pct": overlap,
                 "match_type": tipo
@@ -969,7 +1019,8 @@ def analizar_shapefile(
                     "area_ha": float(feat.get("area_ha") or 0.0),
                     "fecha_adjudicacion": feat.get("incoming_fecha_adju"),
                     "numero_tramite": feat.get("incoming_tramite"),
-                    "institucion": feat.get("incoming_institucion")
+                    "institucion": feat.get("incoming_institucion"),
+                    "sector": feat.get("incoming_sector")
                 })
 
         db.commit()

@@ -15,7 +15,26 @@ PRJ_CONTENT = 'PROJCS["WGS_1984_UTM_Zone_17S",GEOGCS["GCS_WGS_1984",DATUM["D_WGS
 def normalize_field_name(name: str) -> str:
     clean = re.sub(r'[^a-zA-Z0-9_]', '_', name).strip('_').upper()[:10]
     clean = re.sub(r'_+', '_', clean)
+    if clean in ['CLAVE_CATA', 'CODIGO', 'COD_CAT']:
+        return 'COD_CAT'
     return clean or "FIELD"
+
+def clean_cadastral_code(val):
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s.endswith('.0'):
+        s = s[:-2]
+    if s in ['0', 'None', '', 'S/C']:
+        return ""
+    if 'e+' in s.lower():
+        try:
+            s = f"{int(float(s))}"
+        except Exception:
+            pass
+    if len(s) == 18 and s.startswith('206'):
+        s = '1' + s
+    return s[:30]
 
 def clean_cedula_ruc(val):
     if val is None:
@@ -121,7 +140,13 @@ def standardize_record_dict(rec_dict):
     1. Cédulas a CED_RUC con anteposición de '0' si son 9 dígitos, extrayendo de DATOS y CEDULA.
     2. Unión de NOMBRES y APELLIDOS.
     3. Consolidación de RECINTO y RECT en SECTOR sin duplicar.
+    4. Unificación de CLAVE_CATA, CODIGO y COD_CAT en COD_CAT.
     """
+    # 0. Código Catastral -> COD_CAT
+    curr_cod = clean_cadastral_code(rec_dict.get('COD_CAT'))
+    if curr_cod:
+        rec_dict['COD_CAT'] = curr_cod
+
     # 1. Cédula / RUC
     curr_ced_ruc = clean_cedula_ruc(rec_dict.get('CED_RUC'))
     cand_ced = curr_ced_ruc
@@ -203,6 +228,9 @@ def process_unification(files, output_path, is_predios=False):
         field_defs["CED_RUC"] = ['C', 15, 0]
     else:
         field_defs["CED_RUC"] = ['C', 15, 0]
+
+    # Unificar código catastral en COD_CAT (texto 30)
+    field_defs["COD_CAT"] = ['C', 30, 0]
         
     if "NOMBRES" in field_defs:
         field_defs["NOMBRES"] = ['C', 200, 0]
