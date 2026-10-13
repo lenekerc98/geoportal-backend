@@ -206,7 +206,10 @@ def reconstruir_topologia_predio(
     for idx, l in enumerate(linderos_list):
         val_col = ""
         if colindantes and idx < len(colindantes) and colindantes[idx]:
-            val_col = str(colindantes[idx]).strip()
+            raw_c = str(colindantes[idx]).strip()
+            # Limpiar prefijo cardinal y medidas entre parentesis
+            raw_c = re.sub(r'^(norte|sur|este|oeste)\s*:\s*', '', raw_c, flags=re.IGNORECASE)
+            val_col = re.sub(r'\s*\([\d\.]+\s*m\)', '', raw_c).strip()
         val_rumbo = l["rumbo"]
         if rumbos and idx < len(rumbos) and rumbos[idx]:
             val_rumbo = str(rumbos[idx]).strip()
@@ -520,6 +523,7 @@ def procesar_shapefile(
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
         col_institucion = resolver_columna(mapping.get("institucion"))
+        col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
 
         if col_cedula and not SAFE_IDENT.match(str(col_cedula)): col_cedula = None
         if col_nombre and not SAFE_IDENT.match(str(col_nombre)): col_nombre = None
@@ -527,8 +531,9 @@ def procesar_shapefile(
         if col_fecha_adju and not SAFE_IDENT.match(str(col_fecha_adju)): col_fecha_adju = None
         if col_tramite and not SAFE_IDENT.match(str(col_tramite)): col_tramite = None
         if col_institucion and not SAFE_IDENT.match(str(col_institucion)): col_institucion = None
+        if col_sector and not SAFE_IDENT.match(str(col_sector)): col_sector = None
 
-        logging.info(f"Columnas resueltas: cedula={col_cedula}, nombre={col_nombre}, codigo={col_codigo}, fecha_adju={col_fecha_adju}, tramite={col_tramite}, institucion={col_institucion}")
+        logging.info(f"Columnas resueltas: cedula={col_cedula}, nombre={col_nombre}, codigo={col_codigo}, fecha_adju={col_fecha_adju}, tramite={col_tramite}, institucion={col_institucion}, sector={col_sector}")
         
         resultados = {
             "tabla_cruda": tabla_completa,
@@ -590,6 +595,7 @@ def procesar_shapefile(
         if col_fecha_adju: query_leer += f', "{col_fecha_adju}" as val_fecha_adju'
         if col_tramite: query_leer += f', "{col_tramite}" as val_tramite'
         if col_institucion: query_leer += f', "{col_institucion}" as val_institucion'
+        if col_sector: query_leer += f', "{col_sector}" as val_sector'
         query_leer += f" FROM {tabla_completa}"
         
         filas = db.execute(text(query_leer)).mappings().all()
@@ -631,10 +637,11 @@ def procesar_shapefile(
                     val_fa = str(fila.get('val_fecha_adju', '') or '').strip() or None
                     val_tr = str(fila.get('val_tramite', '') or '').strip() or None
                     val_inst = str(fila.get('val_institucion', '') or '').strip() or None
+                    val_sec = str(fila.get('val_sector', '') or '').strip() or None
 
                     row_id_prov, row_id_cant = resolver_dpa_predio(codigo_asignar, default_prov, default_cant, db)
                     q_predio = text(f"""
-                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton)
+                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector)
                         SELECT 
                             :codigo, :pos_id, :emp_id, 
                             CASE 
@@ -650,7 +657,8 @@ def procesar_shapefile(
                             :institucion,
                             :proy_id,
                             :id_prov,
-                            :id_cant
+                            :id_cant,
+                            :sector
                         FROM {tabla_completa} WHERE id = :id_row
                         RETURNING id
                     """)
@@ -666,7 +674,8 @@ def procesar_shapefile(
                         "institucion": val_inst,
                         "proy_id": resolved_proyecto_id,
                         "id_prov": row_id_prov,
-                        "id_cant": row_id_cant
+                        "id_cant": row_id_cant,
+                        "sector": val_sec
                     }).mappings().first()
                     
                     if res_predio:
@@ -1035,6 +1044,7 @@ def confirmar_importacion_shapefile(
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
         col_institucion = resolver_columna(mapping.get("institucion"))
+        col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
 
         # Consultar filas de staging
         q_cols = ["id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
@@ -1044,6 +1054,7 @@ def confirmar_importacion_shapefile(
         if col_fecha_adju: q_cols.append(f'"{col_fecha_adju}" as val_fecha_adju')
         if col_tramite: q_cols.append(f'"{col_tramite}" as val_tramite')
         if col_institucion: q_cols.append(f'"{col_institucion}" as val_institucion')
+        if col_sector: q_cols.append(f'"{col_sector}" as val_sector')
 
         staging_rows = db.execute(text(f"SELECT {', '.join(q_cols)} FROM {staging_table}")).mappings().all()
         staging_dict = {str(r["id"]): r for r in staging_rows}
@@ -1091,6 +1102,7 @@ def confirmar_importacion_shapefile(
                 val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
                 val_tr = str(fila.get("val_tramite", "") or "").strip() or None
                 val_inst = str(fila.get("val_institucion", "") or "").strip() or None
+                val_sec = str(fila.get("val_sector", "") or "").strip() or None
 
                 # Encontrar el predio existente que colisiona con esta fila de staging
                 q_find = text(f"""
@@ -1156,6 +1168,7 @@ def confirmar_importacion_shapefile(
                             fecha_adjudicacion = COALESCE(:fa, fecha_adjudicacion),
                             numero_tramite = COALESCE(:tr, numero_tramite),
                             institucion = COALESCE(:inst, institucion),
+                            sector = COALESCE(:sec, sector),
                             proyecto_id = COALESCE(proyecto_id, :proy_id),
                             id_provincia = COALESCE(id_provincia, :id_prov),
                             id_canton = COALESCE(id_canton, :id_cant),
@@ -1170,6 +1183,7 @@ def confirmar_importacion_shapefile(
                         "fa": val_fa,
                         "tr": val_tr,
                         "inst": val_inst,
+                        "sec": val_sec,
                         "mod_por": user_id,
                         "target_id": target_id,
                         "proy_id": resolved_proyecto_id,
@@ -1204,6 +1218,7 @@ def confirmar_importacion_shapefile(
             val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
             val_tr = str(fila.get("val_tramite", "") or "").strip() or None
             val_inst = str(fila.get("val_institucion", "") or "").strip() or None
+            val_sec = str(fila.get("val_sector", "") or "").strip() or None
 
             posesionario_id = None
             if val_ced:
@@ -1233,7 +1248,7 @@ def confirmar_importacion_shapefile(
             row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
             # Predio
             q_ins = text(f"""
-                INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton)
+                INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector)
                 SELECT 
                     :codigo, :pos_id, :emp_id,
                     CASE 
@@ -1243,7 +1258,7 @@ def confirmar_importacion_shapefile(
                     END,
                     ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
                     :creado_por, :fecha_creacion, :fa, :tr, :inst,
-                    :proy_id, :id_prov, :id_cant
+                    :proy_id, :id_prov, :id_cant, :sec
                 FROM {staging_table} WHERE id = :id_row
                 RETURNING id
             """)
@@ -1257,6 +1272,7 @@ def confirmar_importacion_shapefile(
                 "fa": val_fa,
                 "tr": val_tr,
                 "inst": val_inst,
+                "sec": val_sec,
                 "proy_id": resolved_proyecto_id,
                 "id_prov": row_id_prov,
                 "id_cant": row_id_cant

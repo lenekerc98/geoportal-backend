@@ -78,7 +78,8 @@ async def get_predios_geojson(
                         'fecha_creacion', fecha_creacion,
                         'fecha_baja', fecha_baja,
                         'predio_padre_id', predio_padre_id,
-                        'proyecto_id', proyecto_id
+                        'proyecto_id', proyecto_id,
+                        'sector', sector
                     )
                 )
             ), '[]'::json)
@@ -353,8 +354,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         creador_nom = f"{creador_nom} (Brigadista)"
 
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por, operador_temporal_id, tipo_creador, creador_nombre)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por, :op_id, :tipo_creador, :creador_nom)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por, operador_temporal_id, tipo_creador, creador_nombre, sector)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por, :op_id, :tipo_creador, :creador_nom, :sector)
         RETURNING id;
     """)
     try:
@@ -370,7 +371,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "creado_por": user_id,
             "op_id": op_id,
             "tipo_creador": tipo_creador,
-            "creador_nom": creador_nom
+            "creador_nom": creador_nom,
+            "sector": predio.sector
         })
         new_id = result.scalar()
         
@@ -419,6 +421,10 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
     if predio.estado is not None:
         updates.append("estado = :estado")
         params["estado"] = predio.estado
+        
+    if predio.sector is not None:
+        updates.append("sector = :sector")
+        params["sector"] = predio.sector
         
     if predio.geom_geojson is not None:
         params["geojson"] = json.dumps(predio.geom_geojson)
@@ -689,7 +695,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     """
     # 1. Obtener datos del predio y su geometría en formato WKT (Transformado a WGS84 para Leaflet)
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.cod_catastral = :cod_catastral
@@ -757,6 +763,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         codigo_carta=final_cod_carta,
         nombre_carta=final_nom_carta,
         cuadricula_carta=final_cuad_carta,
+        sector=predio_row["sector"],
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -798,7 +805,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """
     # 1. Obtener datos del predio y su geometría en formato WKT
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, ST_AsText(p.geom) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, ST_AsText(p.geom) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.id = :predio_id
@@ -864,6 +871,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         codigo_carta=final_cod_carta,
         nombre_carta=final_nom_carta,
         cuadricula_carta=final_cuad_carta,
+        sector=predio_row["sector"],
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -936,7 +944,8 @@ async def get_codigos_catastrales(
                p.id AS predio_id,
                p.area_ha,
                COALESCE(cc.empresa_id, p.empresa_id) AS empresa_id,
-               p.proyecto_id
+               p.proyecto_id,
+               p.sector
         FROM catastro.codigo_catastral cc
         LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
         LEFT JOIN catastro.posesionario pos ON COALESCE(p.posesionario_id, cc.posesionario_id) = pos.id
@@ -967,7 +976,8 @@ async def get_codigos_catastrales(
                 predio_id=r["predio_id"],
                 area_ha=float(r["area_ha"]) if r["area_ha"] is not None else None,
                 empresa_id=r["empresa_id"],
-                proyecto_id=r["proyecto_id"]
+                proyecto_id=r["proyecto_id"],
+                sector=r["sector"]
             ) for r in rows
         ]
     except Exception as e:
@@ -2167,7 +2177,7 @@ async def get_cad_layers_geojson(
     
     geom_expr = "ST_Transform(geom, 4326)"
     if simplify and float(simplify) > 0:
-        geom_expr = f"ST_Transform(ST_SimplifyPreserveTopology(geom, {float(simplify)}), 4326)"
+        geom_expr = f"ST_Transform(ST_Simplify(geom, {float(simplify)}), 4326)"
 
     query = f"""
         SELECT json_build_object(
@@ -2195,7 +2205,7 @@ async def get_cad_layers_geojson(
     try:
         result = db.execute(text(query), params).scalar()
         content_res = result or '{"type": "FeatureCollection", "features": []}'
-        if len(_CAD_GEOJSON_CACHE) > 50:
+        if len(_CAD_GEOJSON_CACHE) > 500:
             _CAD_GEOJSON_CACHE.clear()
         _CAD_GEOJSON_CACHE[cache_key] = content_res
 

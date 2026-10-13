@@ -109,3 +109,7 @@ class Usuario(Base):
         if n and a:
             return f"{n} {a}"
         return n or a or ""
+
+    @property
+    def proyectos_ids(self):
+        return [p.id for p in self.proyectos]

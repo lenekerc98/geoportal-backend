@@ -27,6 +27,7 @@ class CodigoCatastral(CodigoCatastralBase):
     area_ha: Optional[float] = None
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
+    sector: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -66,6 +67,7 @@ class PredioBase(BaseModel):
     fecha_adjudicacion: Optional[str] = None
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
+    sector: Optional[str] = None
 
 class PredioCreate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -79,6 +81,7 @@ class PredioCreate(BaseModel):
     fecha_adjudicacion: Optional[str] = None
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
+    sector: Optional[str] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -93,6 +96,7 @@ class PredioUpdate(BaseModel):
     fecha_adjudicacion: Optional[str] = None
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
+    sector: Optional[str] = None
 
 class PredioAnguloUpdate(BaseModel):
     angulo_texto: float

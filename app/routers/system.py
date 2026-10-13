@@ -342,6 +342,7 @@ def clone_database(
                     p.fecha_creacion,
                     p.fecha_baja,
                     p.predio_padre_id,
+                    p.sector,
                     pos.cedula,
                     pos.nombre AS nombre_posesionario
                 FROM catastro.predio p
