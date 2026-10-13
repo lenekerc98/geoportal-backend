@@ -1014,10 +1014,28 @@ def analizar_shapefile(
                 "match_type": tipo
             })
 
+        # Contar duplicados internos de códigos en el shapefile
+        codigo_counts = {}
+        for feat in all_features:
+            c = (feat.get("incoming_codigo") or "").strip()
+            if c and c != "S/C" and not c.startswith("TEMP-"):
+                codigo_counts[c] = codigo_counts.get(c, 0) + 1
+        duplicados_internos = [k for k, v in codigo_counts.items() if v > 1]
+
+        codigo_seen = {}
         nuevos = []
         for feat in all_features:
             tid = feat['id']
             if tid not in conflict_temp_ids:
+                cod = (feat.get("incoming_codigo") or "").strip()
+                is_rep = False
+                rep_idx = 1
+                if cod and cod != "S/C" and not cod.startswith("TEMP-"):
+                    if codigo_counts.get(cod, 0) > 1:
+                        is_rep = True
+                        codigo_seen[cod] = codigo_seen.get(cod, 0) + 1
+                        rep_idx = codigo_seen[cod]
+
                 nuevos.append({
                     "temp_id": tid,
                     "codigo": feat.get("incoming_codigo") or "S/C",
@@ -1027,13 +1045,16 @@ def analizar_shapefile(
                     "fecha_adjudicacion": feat.get("incoming_fecha_adju"),
                     "numero_tramite": feat.get("incoming_tramite"),
                     "institucion": feat.get("incoming_institucion"),
-                    "sector": feat.get("incoming_sector")
+                    "sector": feat.get("incoming_sector"),
+                    "es_codigo_repetido": is_rep,
+                    "repeticion_index": rep_idx
                 })
 
         db.commit()
         return {
             "staging_table": tabla_completa,
             "total_features": len(all_features),
+            "duplicados_internos": duplicados_internos,
             "conflictos": conflictos,
             "nuevos": nuevos
         }
@@ -1130,6 +1151,10 @@ def confirmar_importacion_shapefile(
             "lineas_creadas": 0,
             "advertencias": []
         }
+
+        # Obtener códigos catastrales activos existentes en el sistema para evitar violaciones de clave única
+        active_codigos_rows = db.execute(text("SELECT cod_catastral FROM catastro.predio WHERE fecha_baja IS NULL")).fetchall()
+        used_codigos = set(r[0] for r in active_codigos_rows if r[0])
 
         total_items = max(1, len(conflict_actions) + len(selected_new_ids))
         processed_count = 0
@@ -1260,6 +1285,8 @@ def confirmar_importacion_shapefile(
                     resultados["vertices_creados"] += top_res["vertices_creados"]
                     resultados["lineas_creadas"] += top_res["lineas_creadas"]
                     resultados["predios_reemplazados"] += 1
+                    if final_cod:
+                        used_codigos.add(final_cod)
 
         # 2. Procesar predios nuevos seleccionados
         selected_set = set(str(sid) for sid in selected_new_ids)
@@ -1277,79 +1304,96 @@ def confirmar_importacion_shapefile(
             fila = staging_dict[sid_str]
 
             val_cod = str(fila.get("val_codigo", "") or "").strip() or f"TEMP-{uuid.uuid4().hex[:8]}"
-            val_nom = str(fila.get("val_nombre", "") or "").strip()
-            val_ced = str(fila.get("val_cedula", "") or "").strip()
-            val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
-            val_tr = str(fila.get("val_tramite", "") or "").strip() or None
-            val_inst = str(fila.get("val_institucion", "") or "").strip() or None
-            val_sec = str(fila.get("val_sector", "") or "").strip() or None
 
-            posesionario_id = None
-            if val_ced:
-                q_pos = text("SELECT id FROM catastro.posesionario WHERE cedula = :cedula")
-                pos_row = db.execute(q_pos, {"cedula": val_ced}).mappings().first()
-                if pos_row:
-                    posesionario_id = pos_row["id"]
-                else:
-                    ins_pos = text("INSERT INTO catastro.posesionario (cedula, nombre, empresa_id) VALUES (:ced, :nom, :emp_id) RETURNING id")
-                    posesionario_id = db.execute(ins_pos, {"ced": val_ced, "nom": val_nom or "S/D", "emp_id": empresa_id}).scalar()
-            elif val_nom:
-                q_find_name = text("SELECT id FROM catastro.posesionario WHERE nombre = :nom AND (:emp_id IS NULL OR empresa_id = :emp_id) AND cedula IS NULL LIMIT 1")
-                exist_row = db.execute(q_find_name, {"nom": val_nom, "emp_id": empresa_id}).mappings().first()
-                if exist_row:
-                    posesionario_id = exist_row["id"]
-                else:
-                    ins_pos = text("INSERT INTO catastro.posesionario (nombre, empresa_id) VALUES (:nom, :emp_id) RETURNING id")
-                    posesionario_id = db.execute(ins_pos, {"nom": val_nom, "emp_id": empresa_id}).scalar()
+            # Diferenciación automática si el código ya existe en el sistema o en este lote
+            if val_cod in used_codigos:
+                base_cod = val_cod
+                suffix_num = 1
+                while f"{base_cod}-{suffix_num}" in used_codigos:
+                    suffix_num += 1
+                val_cod = f"{base_cod}-{suffix_num}"
+                resultados["codigos_ajustados"] += 1
+                resultados["advertencias"].append(f"Código repetido '{base_cod}' asignado como '{val_cod}' para evitar duplicidad.")
+            used_codigos.add(val_cod)
 
-            # Código catastral
-            db.execute(text("""
-                INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id)
-                VALUES (:codigo, :pos_id, :emp_id)
-                ON CONFLICT (codigo) DO UPDATE SET posesionario_id = EXCLUDED.posesionario_id
-            """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": empresa_id})
+            try:
+                with db.begin_nested():
+                    val_nom = str(fila.get("val_nombre", "") or "").strip()
+                    val_ced = str(fila.get("val_cedula", "") or "").strip()
+                    val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
+                    val_tr = str(fila.get("val_tramite", "") or "").strip() or None
+                    val_inst = str(fila.get("val_institucion", "") or "").strip() or None
+                    val_sec = str(fila.get("val_sector", "") or "").strip() or None
 
-            row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
-            # Predio
-            q_ins = text(f"""
-                INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector)
-                SELECT 
-                    :codigo, :pos_id, :emp_id,
-                    CASE 
-                        WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' 
-                        THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
-                        ELSE ST_Force2D(ST_SetSRID(geom, 32717))
-                    END,
-                    ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
-                    :creado_por, :fecha_creacion, :fa, :tr, :inst,
-                    :proy_id, :id_prov, :id_cant, :sec
-                FROM {staging_table} WHERE {col_fid} = :id_row
-                RETURNING id
-            """)
-            new_predio = db.execute(q_ins, {
-                "codigo": val_cod,
-                "pos_id": posesionario_id,
-                "emp_id": empresa_id,
-                "id_row": int(sid_str),
-                "creado_por": user_id,
-                "fecha_creacion": fecha_creacion,
-                "fa": val_fa,
-                "tr": val_tr,
-                "inst": val_inst,
-                "sec": val_sec,
-                "proy_id": resolved_proyecto_id,
-                "id_prov": row_id_prov,
-                "id_cant": row_id_cant
-            }).mappings().first()
+                    posesionario_id = None
+                    if val_ced:
+                        q_pos = text("SELECT id FROM catastro.posesionario WHERE cedula = :cedula")
+                        pos_row = db.execute(q_pos, {"cedula": val_ced}).mappings().first()
+                        if pos_row:
+                            posesionario_id = pos_row["id"]
+                        else:
+                            ins_pos = text("INSERT INTO catastro.posesionario (cedula, nombre, empresa_id) VALUES (:ced, :nom, :emp_id) RETURNING id")
+                            posesionario_id = db.execute(ins_pos, {"ced": val_ced, "nom": val_nom or "S/D", "emp_id": empresa_id}).scalar()
+                    elif val_nom:
+                        q_find_name = text("SELECT id FROM catastro.posesionario WHERE nombre = :nom AND (:emp_id IS NULL OR empresa_id = :emp_id) AND cedula IS NULL LIMIT 1")
+                        exist_row = db.execute(q_find_name, {"nom": val_nom, "emp_id": empresa_id}).mappings().first()
+                        if exist_row:
+                            posesionario_id = exist_row["id"]
+                        else:
+                            ins_pos = text("INSERT INTO catastro.posesionario (nombre, empresa_id) VALUES (:nom, :emp_id) RETURNING id")
+                            posesionario_id = db.execute(ins_pos, {"nom": val_nom, "emp_id": empresa_id}).scalar()
 
-            if new_predio:
-                new_id = new_predio["id"]
-                resultados["predios_creados"] += 1
+                    # Código catastral
+                    db.execute(text("""
+                        INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id)
+                        VALUES (:codigo, :pos_id, :emp_id)
+                        ON CONFLICT (codigo) DO UPDATE SET posesionario_id = EXCLUDED.posesionario_id
+                    """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": empresa_id})
 
-                # Topología ordenada (P01 al norte, horario, rumbos)
-                top_res = reconstruir_topologia_predio(db, new_id)
-                resultados["vertices_creados"] += top_res["vertices_creados"]
-                resultados["lineas_creadas"] += top_res["lineas_creadas"]
+                    row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
+                    # Predio
+                    q_ins = text(f"""
+                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector)
+                        SELECT 
+                            :codigo, :pos_id, :emp_id,
+                            CASE 
+                                WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' 
+                                THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
+                                ELSE ST_Force2D(ST_SetSRID(geom, 32717))
+                            END,
+                            ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
+                            :creado_por, :fecha_creacion, :fa, :tr, :inst,
+                            :proy_id, :id_prov, :id_cant, :sec
+                        FROM {staging_table} WHERE {col_fid} = :id_row
+                        RETURNING id
+                    """)
+                    new_predio = db.execute(q_ins, {
+                        "codigo": val_cod,
+                        "pos_id": posesionario_id,
+                        "emp_id": empresa_id,
+                        "id_row": int(sid_str),
+                        "creado_por": user_id,
+                        "fecha_creacion": fecha_creacion,
+                        "fa": val_fa,
+                        "tr": val_tr,
+                        "inst": val_inst,
+                        "sec": val_sec,
+                        "proy_id": resolved_proyecto_id,
+                        "id_prov": row_id_prov,
+                        "id_cant": row_id_cant
+                    }).mappings().first()
+
+                    if new_predio:
+                        new_id = new_predio["id"]
+                        resultados["predios_creados"] += 1
+
+                        # Topología ordenada (P01 al norte, horario, rumbos)
+                        top_res = reconstruir_topologia_predio(db, new_id)
+                        resultados["vertices_creados"] += top_res["vertices_creados"]
+                        resultados["lineas_creadas"] += top_res["lineas_creadas"]
+            except Exception as row_err:
+                logging.error(f"Error importando fila {sid_str} con código {val_cod}: {row_err}")
+                continue
 
         # Limpiar tabla staging
         db.execute(text(f"DROP TABLE IF EXISTS {staging_table} CASCADE"))
