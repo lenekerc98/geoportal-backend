@@ -440,7 +440,7 @@ def procesar_shapefile(
             "-lco", f"SCHEMA={schema_raw}",
             "-nln", tabla_raw,
             "-lco", "GEOMETRY_NAME=geom",
-            "-lco", "FID=id",
+            "-lco", "FID=ogc_fid",
             "-lco", "PRECISION=NO",
             "-unsetFieldWidth",
             "-nlt", "PROMOTE_TO_MULTI",
@@ -470,6 +470,7 @@ def procesar_shapefile(
         """)
         col_rows = db.execute(col_query, {"schema": schema_raw, "table": tabla_raw}).fetchall()
         existing_cols = [r[0] for r in col_rows]
+        col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
 
         def normalize_col_key(s: str) -> str:
             if not s:
@@ -610,7 +611,7 @@ def procesar_shapefile(
             resultados["posesionarios_creados"] = res.rowcount
             
         # 6. Sincronizar Predios y Códigos
-        query_leer = f"SELECT id, geom"
+        query_leer = f"SELECT {col_fid} as id, geom"
         if col_cedula: query_leer += f', "{col_cedula}" as val_cedula'
         if col_nombre: query_leer += f', "{col_nombre}" as val_nombre'
         if col_codigo: query_leer += f', "{col_codigo}" as val_codigo'
@@ -681,7 +682,7 @@ def procesar_shapefile(
                             :id_prov,
                             :id_cant,
                             :sector
-                        FROM {tabla_completa} WHERE id = :id_row
+                        FROM {tabla_completa} WHERE {col_fid} = :id_row
                         RETURNING id
                     """)
                     res_predio = db.execute(q_predio, {
@@ -814,7 +815,7 @@ def analizar_shapefile(
             "-lco", f"SCHEMA={schema_raw}",
             "-nln", tabla_staging,
             "-lco", "GEOMETRY_NAME=geom",
-            "-lco", "FID=id",
+            "-lco", "FID=ogc_fid",
             "-lco", "PRECISION=NO",
             "-unsetFieldWidth",
             "-nlt", "PROMOTE_TO_MULTI",
@@ -849,6 +850,7 @@ def analizar_shapefile(
             logging.error(f"Falla ogr2ogr en staging: {err_msg}")
             raise RuntimeError(f"Error cargando shapefile en staging con ogr2ogr: {err_msg}")
         existing_cols = [r[0] for r in col_rows]
+        col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
 
         def normalize_col_key(s: str) -> str:
             if not s: return ""
@@ -899,7 +901,7 @@ def analizar_shapefile(
         col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
 
         # Extraer todos los registros de la tabla staging
-        q_cols = ["t.id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
+        q_cols = [f"t.{col_fid} as id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
         if col_codigo: q_cols.append(f'CAST(t."{col_codigo}" AS VARCHAR) as incoming_codigo')
         else: q_cols.append("NULL as incoming_codigo")
         if col_nombre: q_cols.append(f'CAST(t."{col_nombre}" AS VARCHAR) as incoming_propietario')
@@ -915,13 +917,13 @@ def analizar_shapefile(
         if col_sector: q_cols.append(f'CAST(t."{col_sector}" AS VARCHAR) as incoming_sector')
         else: q_cols.append("NULL as incoming_sector")
 
-        all_features_q = text(f"SELECT {', '.join(q_cols)} FROM {tabla_completa} t WHERE t.geom IS NOT NULL ORDER BY t.id ASC")
+        all_features_q = text(f"SELECT {', '.join(q_cols)} FROM {tabla_completa} t WHERE t.geom IS NOT NULL ORDER BY t.{col_fid} ASC")
         all_features = [dict(r) for r in db.execute(all_features_q).mappings().all()]
 
         # Buscar conflictos espaciales o de código con catastro.predio
         q_conflictos = text(f"""
             SELECT 
-                t.id as temp_id,
+                t.{col_fid} as temp_id,
                 p.id as existing_id,
                 p.cod_catastral as existing_codigo,
                 pos.nombre as existing_propietario,
@@ -959,7 +961,7 @@ def analizar_shapefile(
                     {f'TRIM(CAST(t."{col_codigo}" AS VARCHAR)) = p.cod_catastral' if col_codigo else 'FALSE'}
                 )
             )
-            ORDER BY t.id ASC
+            ORDER BY t.{col_fid} ASC
         """)
 
         conflicts_rows = db.execute(q_conflictos, {"empresa_id": empresa_id}).mappings().all()
@@ -1069,6 +1071,7 @@ def confirmar_importacion_shapefile(
     try:
         col_rows = db.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{staging_table.split('.')[-1]}'")).fetchall()
         existing_cols = [r[0] for r in col_rows]
+        col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
 
         def normalize_col_key(s: str) -> str:
             if not s: return ""
@@ -1098,7 +1101,7 @@ def confirmar_importacion_shapefile(
         col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
 
         # Consultar filas de staging
-        q_cols = ["id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
+        q_cols = [f"{col_fid} as id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
         if col_codigo: q_cols.append(f'"{col_codigo}" as val_codigo')
         if col_nombre: q_cols.append(f'"{col_nombre}" as val_nombre')
         if col_cedula: q_cols.append(f'"{col_cedula}" as val_cedula')
@@ -1162,11 +1165,11 @@ def confirmar_importacion_shapefile(
                     WHERE (:empresa_id IS NULL OR p.empresa_id = :empresa_id)
                       AND p.fecha_baja IS NULL
                       AND (
-                          ST_Equals(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE id = :tid), 32717)), p.geom)
+                          ST_Equals(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)
                           OR (
-                              ST_Intersects(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE id = :tid), 32717)), p.geom)
-                              AND ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE id = :tid), 32717)), p.geom)) / 
-                                  NULLIF(LEAST(ST_Area(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE id = :tid), 32717))), ST_Area(p.geom)), 0) > 0.4
+                              ST_Intersects(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)
+                              AND ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)) / 
+                                  NULLIF(LEAST(ST_Area(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717))), ST_Area(p.geom)), 0) > 0.4
                           )
                           OR (:cod IS NOT NULL AND :cod != '' AND p.cod_catastral = :cod)
                       )
@@ -1211,9 +1214,9 @@ def confirmar_importacion_shapefile(
                                     THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
                                     ELSE ST_Force2D(ST_SetSRID(geom, 32717))
                                 END
-                                FROM {staging_table} WHERE id = :tid
+                                FROM {staging_table} WHERE {col_fid} = :tid
                             ),
-                            area_ha = (SELECT ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 FROM {staging_table} WHERE id = :tid),
+                            area_ha = (SELECT ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 FROM {staging_table} WHERE {col_fid} = :tid),
                             cod_catastral = COALESCE(:cod, cod_catastral),
                             posesionario_id = COALESCE(:pos_id, posesionario_id),
                             fecha_adjudicacion = COALESCE(:fa, fecha_adjudicacion),
@@ -1310,7 +1313,7 @@ def confirmar_importacion_shapefile(
                     ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
                     :creado_por, :fecha_creacion, :fa, :tr, :inst,
                     :proy_id, :id_prov, :id_cant, :sec
-                FROM {staging_table} WHERE id = :id_row
+                FROM {staging_table} WHERE {col_fid} = :id_row
                 RETURNING id
             """)
             new_predio = db.execute(q_ins, {
