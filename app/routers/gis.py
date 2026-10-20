@@ -311,6 +311,10 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         geom_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717)"
         
     empresa_to_use = predio.empresa_id if predio.empresa_id else getattr(current_user, 'id_empresa', None)
+    # Validar que la empresa exista; si no, usar la empresa oficial asignada (2 - GAD Urdaneta)
+    emp_check = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": empresa_to_use}).fetchone() if empresa_to_use else None
+    if not emp_check:
+        empresa_to_use = 2
     
     user_id = None
     if hasattr(current_user, 'id_usuario'):
@@ -381,7 +385,9 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         
         db.commit()
         desc_predio = f"con código catastral {predio.cod_catastral}" if predio.cod_catastral else f"{new_id}"
-        log_audit(db, "INFO", "PREDIO_CREATED", f"Predio {desc_predio} creado por {current_user.username}", current_user.id_usuario)
+        user_nom = getattr(current_user, 'username', None) or (current_user.get('username') if isinstance(current_user, dict) else 'Usuario')
+        user_uid = getattr(current_user, 'id_usuario', None) or (current_user.get('id_usuario') if isinstance(current_user, dict) else None)
+        log_audit(db, "INFO", "PREDIO_CREATED", f"Predio {desc_predio} creado por {user_nom}", user_uid)
         return {"message": "Predio creado exitosamente", "id": new_id}
     except Exception as e:
         db.rollback()
@@ -412,7 +418,11 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             ON CONFLICT (codigo) DO UPDATE SET 
                 posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id);
         """)
-        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": predio.empresa_id or current_user.id_empresa})
+        emp_to_use = predio.empresa_id or getattr(current_user, 'id_empresa', None) or 2
+        emp_check = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": emp_to_use}).fetchone() if emp_to_use else None
+        if not emp_check:
+            emp_to_use = 2
+        db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": emp_to_use})
         
     if predio.empresa_id is not None:
         updates.append("empresa_id = :empresa_id")
@@ -481,7 +491,9 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             if r and r[0]:
                 cod_desc = r[0]
         desc_predio = f"con código catastral {cod_desc}" if cod_desc else f"{id}"
-        log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {desc_predio} actualizado por {current_user.username}", current_user.id_usuario)
+        user_nom = getattr(current_user, 'username', None) or (current_user.get('username') if isinstance(current_user, dict) else 'Usuario')
+        user_uid = getattr(current_user, 'id_usuario', None) or (current_user.get('id_usuario') if isinstance(current_user, dict) else None)
+        log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {desc_predio} actualizado por {user_nom}", user_uid)
         return {"message": "Predio actualizado exitosamente"}
     except Exception as e:
         db.rollback()
