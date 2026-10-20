@@ -97,22 +97,44 @@ def login_brigadista(req: BrigadistaLoginRequest, request: Request, db: Session 
     uuid_clean = req.dispositivo_uuid.strip()
 
     existente = db.execute(text("""
-        SELECT id FROM seguridad.operador_temporal 
+        SELECT id, activo, empresa_id, proyecto_id FROM seguridad.operador_temporal 
         WHERE dispositivo_uuid = :uuid AND nombre ILIKE :nom AND apellido ILIKE :ape
     """), {"uuid": uuid_clean, "nom": nombre_clean, "ape": apellido_clean}).fetchone()
 
     if existente:
         op_id = existente[0]
+        op_activo = bool(existente[1])
+        op_emp = existente[2]
+        op_proj = existente[3]
+
+        if not op_activo:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Acceso pendiente o deshabilitado: Su usuario de campo aún no ha sido activado por el Superadministrador. Solicite la activación de su casilla de verificación (check) para acceder."
+            )
+
+        # Utilizar la empresa y proyecto asignados por el Superadministrador
+        emp_id = op_emp if op_emp else emp_id
+        proj_id = op_proj if op_proj else proj_id
+
+        emp_row = db.execute(text("SELECT nombre FROM catastro.empresa WHERE id = :eid"), {"eid": emp_id}).fetchone()
+        if emp_row:
+            emp_nombre = emp_row[0]
+
+        proj_row = db.execute(text("SELECT nombre FROM catastro.proyecto WHERE id = :pid"), {"pid": proj_id}).fetchone()
+        if proj_row:
+            proj_nombre = proj_row[0]
+
         db.execute(text("""
             UPDATE seguridad.operador_temporal 
-            SET ultimo_acceso = CURRENT_TIMESTAMP, ip_registro = :ip, dispositivo_modelo = :mod,
-                empresa_id = :eid, proyecto_id = :pid, activo = true
+            SET ultimo_acceso = CURRENT_TIMESTAMP, ip_registro = :ip, dispositivo_modelo = :mod
             WHERE id = :id
-        """), {"ip": ip, "mod": req.dispositivo_modelo, "eid": emp_id, "pid": proj_id, "id": op_id})
+        """), {"ip": ip, "mod": req.dispositivo_modelo, "id": op_id})
     else:
+        # Nuevo registro desde móvil: se guarda con activo = False a la espera de activación del Superadministrador
         ins = db.execute(text("""
-            INSERT INTO seguridad.operador_temporal (nombre, apellido, dispositivo_uuid, dispositivo_modelo, ip_registro, empresa_id, proyecto_id)
-            VALUES (:nom, :ape, :uuid, :mod, :ip, :eid, :pid)
+            INSERT INTO seguridad.operador_temporal (nombre, apellido, dispositivo_uuid, dispositivo_modelo, ip_registro, empresa_id, proyecto_id, activo)
+            VALUES (:nom, :ape, :uuid, :mod, :ip, :eid, :pid, false)
             RETURNING id
         """), {
             "nom": nombre_clean,
@@ -124,6 +146,11 @@ def login_brigadista(req: BrigadistaLoginRequest, request: Request, db: Session 
             "pid": proj_id
         })
         op_id = ins.scalar()
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Dispositivo registrado exitosamente. Por seguridad, el Superadministrador debe habilitar su casilla de acceso (check) en el panel web antes de iniciar sesión."
+        )
 
     db.commit()
 

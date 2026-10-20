@@ -73,17 +73,22 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         if payload.get("role") == "brigadista":
             op_id = payload.get("operador_temporal_id")
             from sqlalchemy import text
-            op = db.execute(text("SELECT id, nombre, apellido, nombre_completo, empresa_id, proyecto_id FROM seguridad.operador_temporal WHERE id = :id"), {"id": op_id}).fetchone()
+            op = db.execute(text("SELECT id, nombre, apellido, nombre_completo, empresa_id, proyecto_id, activo FROM seguridad.operador_temporal WHERE id = :id"), {"id": op_id}).fetchone()
             if op:
+                if not op[6]:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Acceso revocado: El Superadministrador ha deshabilitado el acceso a la empresa y proyecto para este operador."
+                    )
                 class BrigadistaUser:
                     id_usuario = None
                     id = None
                     username = payload.get("sub")
-                    nombre = op[3]
+                    nombre = op[3] or f"{op[1]} {op[2]}"
                     id_empresa = op[4]
                     id_proyecto = op[5]
                     role = "brigadista"
-                    rol = type('Rol', (), {'nombre': 'brigadista', 'permisos': {}})()
+                    rol = type('Rol', (), {'nombre': 'brigadista', 'permisos': {'crear_predio': True, 'ver_predio': True}})()
                     activo = True
                     is_brigadista = True
                     operador_temporal_id = op[0]
@@ -475,3 +480,110 @@ async def delete_user(id_usuario: int, db: Session = Depends(get_db), current_us
         pass
         
     return {"detail": "Usuario eliminado correctamente"}
+
+
+# --- Gestión de Operadores de Campo / Brigadistas (Móvil) ---
+
+from pydantic import BaseModel
+from typing import Optional
+
+class OperadorTemporalUpdate(BaseModel):
+    activo: Optional[bool] = None
+    empresa_id: Optional[int] = None
+    proyecto_id: Optional[int] = None
+
+@router.get("/operadores-temporales")
+async def list_operadores_temporales(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    is_admin_or_superadmin_user(current_user)
+
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    is_super = cur_role in ["superadmin", "superadministrador"]
+
+    query = """
+        SELECT 
+            op.id, 
+            op.nombre, 
+            op.apellido, 
+            op.nombre_completo, 
+            op.dispositivo_uuid, 
+            op.dispositivo_modelo, 
+            op.ip_registro, 
+            op.empresa_id, 
+            e.nombre as empresa_nombre,
+            op.proyecto_id, 
+            p.nombre as proyecto_nombre,
+            op.activo, 
+            op.fecha_creacion, 
+            op.ultimo_acceso
+        FROM seguridad.operador_temporal op
+        LEFT JOIN catastro.empresa e ON e.id = op.empresa_id
+        LEFT JOIN catastro.proyecto p ON p.id = op.proyecto_id
+    """
+    params = {}
+    if not is_super and getattr(current_user, 'id_empresa', None):
+        query += " WHERE op.empresa_id = :emp_id"
+        params["emp_id"] = current_user.id_empresa
+
+    query += " ORDER BY op.id DESC"
+
+    rows = db.execute(text(query), params).fetchall()
+    results = []
+    for r in rows:
+        results.append({
+            "id": r[0],
+            "nombre": r[1],
+            "apellido": r[2],
+            "nombre_completo": r[3] or f"{r[1]} {r[2]}",
+            "dispositivo_uuid": r[4],
+            "dispositivo_modelo": r[5],
+            "ip_registro": r[6],
+            "empresa_id": r[7],
+            "empresa_nombre": r[8] or ("Empresa #" + str(r[7]) if r[7] else "Sin Empresa"),
+            "proyecto_id": r[9],
+            "proyecto_nombre": r[10] or ("Proyecto #" + str(r[9]) if r[9] else "Sin Proyecto"),
+            "activo": bool(r[11]),
+            "fecha_creacion": r[12].isoformat() if r[12] else None,
+            "ultimo_acceso": r[13].isoformat() if r[13] else None
+        })
+    return results
+
+@router.put("/operadores-temporales/{id}")
+async def update_operador_temporal(id: int, data: OperadorTemporalUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    is_admin_or_superadmin_user(current_user)
+
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    is_super = cur_role in ["superadmin", "superadministrador"]
+
+    op = db.execute(text("SELECT id, empresa_id FROM seguridad.operador_temporal WHERE id = :id"), {"id": id}).fetchone()
+    if not op:
+        raise HTTPException(status_code=404, detail="Operador de campo no encontrado")
+
+    if not is_super and getattr(current_user, 'id_empresa', None) and op[1] != current_user.id_empresa:
+        raise HTTPException(status_code=403, detail="No tienes permisos para modificar operadores de otra empresa.")
+
+    updates = []
+    params = {"id": id}
+    if data.activo is not None:
+        updates.append("activo = :activo")
+        params["activo"] = data.activo
+    if data.empresa_id is not None:
+        updates.append("empresa_id = :empresa_id")
+        params["empresa_id"] = data.empresa_id
+    if data.proyecto_id is not None:
+        updates.append("proyecto_id = :proyecto_id")
+        params["proyecto_id"] = data.proyecto_id
+
+    if updates:
+        db.execute(text(f"UPDATE seguridad.operador_temporal SET {', '.join(updates)} WHERE id = :id"), params)
+        db.commit()
+        log_audit(db, "INFO", "UPDATE_OPERADOR", f"Operador temporal ID {id} actualizado por {getattr(current_user, 'username', 'admin')}: activo={data.activo}")
+
+    return {"detail": "Operador actualizado correctamente", "id": id}
+
+@router.delete("/operadores-temporales/{id}")
+async def delete_operador_temporal(id: int, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
+    is_superadmin_user(current_user)
+    db.execute(text("DELETE FROM seguridad.operador_temporal WHERE id = :id"), {"id": id})
+    db.commit()
+    log_audit(db, "INFO", "DELETE_OPERADOR", f"Operador temporal ID {id} eliminado por Superadmin")
+    return {"detail": "Operador eliminado correctamente", "id": id}

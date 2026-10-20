@@ -30,16 +30,24 @@ def is_superadmin_or_admin(user: Usuario):
 @router.get("", response_model=List[schemas.Empresa])
 @router.get("/", response_model=List[schemas.Empresa])
 def list_empresas(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
-    # Lectura dinámica de empresas desde la base de datos para cualquier usuario autenticado
+    # Lectura dinámica de empresas desde la base de datos según asignación y rol
     role_name = ""
     if hasattr(current_user, 'rol') and current_user.rol:
         role_name = str(current_user.rol.nombre).lower()
     elif hasattr(current_user, 'role'):
         role_name = str(current_user.role).lower()
 
-    if role_name == "admin" and getattr(current_user, 'id_empresa', None):
-        return db.query(Empresa).filter(Empresa.id == current_user.id_empresa).all()
-    return db.query(Empresa).all()
+    if role_name in ["superadmin", "superadministrador"]:
+        return db.query(Empresa).filter(Empresa.activo == True).order_by(Empresa.id).all()
+
+    user_emp_id = getattr(current_user, 'id_empresa', None)
+    if not user_emp_id and hasattr(current_user, 'empresa_id'):
+        user_emp_id = getattr(current_user, 'empresa_id', None)
+
+    if user_emp_id:
+        return db.query(Empresa).filter(Empresa.id == user_emp_id, Empresa.activo == True).all()
+
+    return []
 
 @router.post("", response_model=schemas.Empresa)
 @router.post("/", response_model=schemas.Empresa)

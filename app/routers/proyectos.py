@@ -23,7 +23,7 @@ def is_superadmin_or_admin(user: Usuario):
 @router.get("", response_model=List[schemas.Proyecto])
 @router.get("/", response_model=List[schemas.Proyecto])
 def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
-    # Lectura dinámica de proyectos desde la base de datos
+    # Lectura dinámica de proyectos según empresa asignada y permisos del usuario
     role_name = ""
     if hasattr(current_user, 'rol') and current_user.rol:
         role_name = str(current_user.rol.nombre).lower()
@@ -31,19 +31,24 @@ def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depend
         role_name = str(current_user.role).lower()
 
     if role_name in ["superadmin", "superadministrador"]:
-        return db.query(Proyecto).all()
-    elif role_name == "admin" and getattr(current_user, 'id_empresa', None):
-        return db.query(Proyecto).filter(Proyecto.empresas.any(id=current_user.id_empresa)).all()
+        return db.query(Proyecto).filter(Proyecto.estado == 'Activo').order_by(Proyecto.id).all()
+    elif role_name in ["admin", "administrador"] and getattr(current_user, 'id_empresa', None):
+        return db.query(Proyecto).filter(Proyecto.empresas.any(id=current_user.id_empresa), Proyecto.estado == 'Activo').order_by(Proyecto.id).all()
     else:
+        # Si tiene proyectos asignados explícitamente en seguridad.usuario_proyecto
         user_projs = getattr(current_user, 'proyectos', [])
         if user_projs and len(user_projs) > 0:
-            return user_projs
+            return [p for p in user_projs if getattr(p, 'estado', 'Activo') == 'Activo']
+
+        # Si tiene empresa asignada, proyectos activos asociados a dicha empresa
         user_emp = getattr(current_user, 'id_empresa', None)
+        if not user_emp and hasattr(current_user, 'empresa_id'):
+            user_emp = getattr(current_user, 'empresa_id', None)
+
         if user_emp:
-            projs_db = db.query(Proyecto).filter(Proyecto.empresas.any(id=user_emp)).all()
-            if projs_db:
-                return projs_db
-        return db.query(Proyecto).all()
+            return db.query(Proyecto).filter(Proyecto.empresas.any(id=user_emp), Proyecto.estado == 'Activo').order_by(Proyecto.id).all()
+
+        return []
 
 @router.post("", response_model=schemas.Proyecto)
 @router.post("/", response_model=schemas.Proyecto)
