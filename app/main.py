@@ -342,7 +342,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Configuración segura de orígenes CORS
+# Configuración segura de orígenes CORS con soporte total para Capacitor Móvil
 frontend_url_env = os.getenv("FRONTEND_URL", "*")
 default_allowed_origins = [
     "http://localhost:5173",
@@ -354,18 +354,20 @@ default_allowed_origins = [
     "http://127.0.0.1:3000",
     "https://127.0.0.1:3000",
     "http://localhost:8000",
-    "https://localhost:8000"
+    "https://localhost:8000",
+    "https://localhost",
+    "http://localhost",
+    "capacitor://localhost",
+    "ionic://localhost"
 ]
 
-if frontend_url_env == "*":
-    origins = default_allowed_origins
-    origin_regex = r"https?://.*"
-else:
-    origins = [url.strip() for url in frontend_url_env.split(",") if url.strip()]
-    for o in default_allowed_origins:
-        if o not in origins:
-            origins.append(o)
-    origin_regex = None
+origins = list(default_allowed_origins)
+if frontend_url_env and frontend_url_env != "*":
+    for u in frontend_url_env.split(","):
+        if u.strip() and u.strip() not in origins:
+            origins.append(u.strip())
+
+origin_regex = r"(https?://.*|capacitor://.*|ionic://.*)"
 
 app.add_middleware(
     CORSMiddleware,
