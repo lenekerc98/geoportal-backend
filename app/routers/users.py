@@ -279,7 +279,7 @@ async def create_user(user: schemas.UsuarioCreate, db: Session = Depends(get_db)
     # Si es Superadmin, puede asignar a cualquier empresa o a ninguna (None)
     # Si es Admin, obligatoriamente se le asigna la misma empresa que tiene el Admin
     empresa_asignar = user.id_empresa
-    if current_user.rol and current_user.rol.nombre.lower() == "admin":
+    if current_user.rol and current_user.rol.nombre.lower() in ["admin", "administrador"]:
         empresa_asignar = current_user.id_empresa
         
     new_user = Usuario(

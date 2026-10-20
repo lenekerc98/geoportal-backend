@@ -55,8 +55,14 @@ def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depend
 def create_proyecto(proyecto: schemas.ProyectoCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     is_superadmin_or_admin(current_user)
     
-    if current_user.rol.nombre.lower() == "admin" and (not proyecto.empresas_ids or current_user.id_empresa not in proyecto.empresas_ids):
-        raise HTTPException(status_code=403, detail="No tienes permisos para crear proyectos sin tu empresa.")
+    cur_role = current_user.rol.nombre.lower() if current_user.rol else ""
+    if cur_role in ["admin", "administrador"]:
+        # Si es Administrador, se vincula automáticamente a su empresa asignada sin obligarlo a seleccionarla
+        if not proyecto.empresas_ids:
+            if getattr(current_user, 'id_empresa', None):
+                proyecto.empresas_ids = [current_user.id_empresa]
+        elif getattr(current_user, 'id_empresa', None) and current_user.id_empresa not in proyecto.empresas_ids:
+            proyecto.empresas_ids = [current_user.id_empresa]
         
     proyecto_data = proyecto.model_dump(exclude={'empresas_ids'})
     db_proyecto = Proyecto(**proyecto_data)
