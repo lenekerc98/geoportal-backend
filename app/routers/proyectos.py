@@ -23,14 +23,27 @@ def is_superadmin_or_admin(user: Usuario):
 @router.get("", response_model=List[schemas.Proyecto])
 @router.get("/", response_model=List[schemas.Proyecto])
 def list_proyectos(db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
-    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    # Lectura dinámica de proyectos desde la base de datos
+    role_name = ""
+    if hasattr(current_user, 'rol') and current_user.rol:
+        role_name = str(current_user.rol.nombre).lower()
+    elif hasattr(current_user, 'role'):
+        role_name = str(current_user.role).lower()
+
     if role_name in ["superadmin", "superadministrador"]:
         return db.query(Proyecto).all()
-    elif role_name == "admin":
+    elif role_name == "admin" and getattr(current_user, 'id_empresa', None):
         return db.query(Proyecto).filter(Proyecto.empresas.any(id=current_user.id_empresa)).all()
     else:
-        # Para usuarios regulares, devolver solo los proyectos que tengan asignados
-        return current_user.proyectos
+        user_projs = getattr(current_user, 'proyectos', [])
+        if user_projs and len(user_projs) > 0:
+            return user_projs
+        user_emp = getattr(current_user, 'id_empresa', None)
+        if user_emp:
+            projs_db = db.query(Proyecto).filter(Proyecto.empresas.any(id=user_emp)).all()
+            if projs_db:
+                return projs_db
+        return db.query(Proyecto).all()
 
 @router.post("", response_model=schemas.Proyecto)
 @router.post("/", response_model=schemas.Proyecto)

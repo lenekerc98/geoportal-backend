@@ -310,11 +310,22 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     if predio.es_utm:
         geom_sql = "ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717)"
         
-    empresa_to_use = predio.empresa_id if predio.empresa_id else getattr(current_user, 'id_empresa', None)
-    # Validar que la empresa exista; si no, usar la empresa oficial asignada (2 - GAD Urdaneta)
-    emp_check = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": empresa_to_use}).fetchone() if empresa_to_use else None
-    if not emp_check:
-        empresa_to_use = 2
+    # Obtener la empresa dinámicamente desde la base de datos
+    empresa_to_use = predio.empresa_id
+    if empresa_to_use:
+        emp_exists = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": empresa_to_use}).fetchone()
+        if not emp_exists:
+            empresa_to_use = None
+    if not empresa_to_use:
+        user_emp = getattr(current_user, 'id_empresa', None)
+        if user_emp:
+            emp_exists = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": user_emp}).fetchone()
+            if emp_exists:
+                empresa_to_use = user_emp
+    if not empresa_to_use:
+        first_emp = db.execute(text("SELECT id FROM catastro.empresa ORDER BY id ASC LIMIT 1")).fetchone()
+        if first_emp:
+            empresa_to_use = first_emp[0]
     
     user_id = None
     if hasattr(current_user, 'id_usuario'):
@@ -418,10 +429,21 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             ON CONFLICT (codigo) DO UPDATE SET 
                 posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id);
         """)
-        emp_to_use = predio.empresa_id or getattr(current_user, 'id_empresa', None) or 2
-        emp_check = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": emp_to_use}).fetchone() if emp_to_use else None
-        if not emp_check:
-            emp_to_use = 2
+        emp_to_use = predio.empresa_id
+        if emp_to_use:
+            emp_exists = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": emp_to_use}).fetchone()
+            if not emp_exists:
+                emp_to_use = None
+        if not emp_to_use:
+            user_emp = getattr(current_user, 'id_empresa', None)
+            if user_emp:
+                emp_exists = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": user_emp}).fetchone()
+                if emp_exists:
+                    emp_to_use = user_emp
+        if not emp_to_use:
+            first_emp = db.execute(text("SELECT id FROM catastro.empresa ORDER BY id ASC LIMIT 1")).fetchone()
+            if first_emp:
+                emp_to_use = first_emp[0]
         db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": emp_to_use})
         
     if predio.empresa_id is not None:
