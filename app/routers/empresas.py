@@ -37,17 +37,29 @@ def list_empresas(db: Session = Depends(get_db), current_user: Usuario = Depends
     elif hasattr(current_user, 'role'):
         role_name = str(current_user.role).lower()
 
-    if role_name in ["superadmin", "superadministrador"]:
-        return db.query(Empresa).filter(Empresa.activo == True).order_by(Empresa.id).all()
+    try:
+        query = db.query(Empresa)
+        if hasattr(Empresa, 'activo'):
+            query = query.filter(Empresa.activo == True)
 
-    user_emp_id = getattr(current_user, 'id_empresa', None)
-    if not user_emp_id and hasattr(current_user, 'empresa_id'):
-        user_emp_id = getattr(current_user, 'empresa_id', None)
+        if role_name in ["superadmin", "superadministrador"]:
+            return query.order_by(Empresa.id).all()
 
-    if user_emp_id:
-        return db.query(Empresa).filter(Empresa.id == user_emp_id, Empresa.activo == True).all()
+        user_emp_id = getattr(current_user, 'id_empresa', None)
+        if not user_emp_id and hasattr(current_user, 'empresa_id'):
+            user_emp_id = getattr(current_user, 'empresa_id', None)
 
-    return []
+        if user_emp_id:
+            return query.filter(Empresa.id == user_emp_id).all()
+
+        if role_name in ["admin", "administrador"]:
+            return query.order_by(Empresa.id).all()
+
+        return []
+    except Exception as e:
+        import logging
+        logging.error(f"Error en list_empresas: {e}")
+        return []
 
 @router.post("", response_model=schemas.Empresa)
 @router.post("/", response_model=schemas.Empresa)

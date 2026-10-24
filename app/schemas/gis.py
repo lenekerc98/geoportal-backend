@@ -28,6 +28,7 @@ class CodigoCatastral(CodigoCatastralBase):
     empresa_id: Optional[int] = None
     proyecto_id: Optional[int] = None
     sector: Optional[str] = None
+    parroquia: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -68,6 +69,7 @@ class PredioBase(BaseModel):
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
     sector: Optional[str] = None
+    parroquia: Optional[str] = None
 
 class PredioCreate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -82,6 +84,7 @@ class PredioCreate(BaseModel):
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
     sector: Optional[str] = None
+    parroquia: Optional[str] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -97,6 +100,7 @@ class PredioUpdate(BaseModel):
     numero_tramite: Optional[str] = None
     institucion: Optional[str] = None
     sector: Optional[str] = None
+    parroquia: Optional[str] = None
 
 class PredioAnguloUpdate(BaseModel):
     angulo_texto: float
@@ -115,6 +119,7 @@ class Predio(PredioBase):
     id_provincia: Optional[int] = None
     id_canton: Optional[int] = None
     id_ciudad: Optional[int] = None
+    parroquia: Optional[str] = None
     angulo_texto: Optional[float] = 0.0
     codigo_carta: Optional[str] = None
     nombre_carta: Optional[str] = None

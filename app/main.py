@@ -203,6 +203,8 @@ with engine.connect() as connection:
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS predio_padre_id INT REFERENCES catastro.predio(id)"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE SET NULL"))
             connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS sector VARCHAR(100)"))
+            connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS parroquia VARCHAR(100)"))
             
             connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS estado VARCHAR(50) DEFAULT 'Activo'"))
             connection.execute(text("ALTER TABLE catastro.vertice ADD COLUMN IF NOT EXISTS fecha_baja TIMESTAMP"))
@@ -233,6 +235,7 @@ with engine.connect() as connection:
                     p.fecha_baja,
                     p.predio_padre_id,
                     p.sector,
+                    p.parroquia,
                     pos.cedula,
                     pos.nombre AS nombre_posesionario
                 FROM catastro.predio p
