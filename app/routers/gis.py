@@ -1270,6 +1270,7 @@ async def import_shapefile(
     proyecto_id: Optional[int] = Form(None),
     import_type: str = Form("catastro_base"),
     nombre_capa: str = Form(None),
+    limite_assignments: Optional[str] = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
@@ -1298,11 +1299,19 @@ async def import_shapefile(
         # Convertir empresa_id 0 a None para permitir capas globales / sin empresa
         real_empresa_id = None if empresa_id == 0 else empresa_id
         
+        assign_dict = None
+        if limite_assignments:
+            try:
+                assign_dict = json.loads(limite_assignments)
+            except Exception:
+                assign_dict = None
+
         # Llamar al servicio
         resultados = procesar_shapefile(
             temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa, 
             user_id=current_user.id_usuario, fecha_creacion=fecha_creacion,
-            proyecto_id=proyecto_id
+            proyecto_id=proyecto_id,
+            limite_assignments=assign_dict
         )
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
@@ -1442,7 +1451,7 @@ async def get_capas_adicionales(
     if current_user.rol.nombre.lower() != "superadministrador" and current_user.rol.nombre.lower() != "superadmin":
         empresa_id = current_user.id_empresa
     
-    query = "SELECT id, nombre_capa, tabla_db, tipo_geometria, empresa_id, fecha_subida FROM catastro.capas_adicionales"
+    query = "SELECT id, nombre_capa, tabla_db, tipo_geometria, empresa_id, fecha_subida, COALESCE(tipo_capa, 'adicional') as tipo_capa, COALESCE(color, '#a855f7') as color, COALESCE(opacidad, 0.35) as opacidad, COALESCE(borde_color, '#7e22ce') as borde_color, COALESCE(borde_grosor, 2) as borde_grosor FROM catastro.capas_adicionales"
     params = {}
     if empresa_id:
         query += " WHERE empresa_id = :empresa_id"
@@ -1487,6 +1496,44 @@ def get_capa_adicional_geojson(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo capa: {str(e)}")
 
+
+class CapaEstiloUpdate(BaseModel):
+    color: Optional[str] = None
+    opacidad: Optional[float] = None
+    borde_color: Optional[str] = None
+    borde_grosor: Optional[int] = None
+
+@router.put("/capas-adicionales/{tabla_db}/estilo")
+async def update_capa_estilo(
+    tabla_db: str,
+    estilo: CapaEstiloUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Actualiza los atributos visuales (color, opacidad, borde) de una capa adicional o de límite.
+    """
+    updates = []
+    params = {"tabla_db": tabla_db}
+    if estilo.color is not None:
+        updates.append("color = :color")
+        params["color"] = estilo.color
+    if estilo.opacidad is not None:
+        updates.append("opacidad = :opacidad")
+        params["opacidad"] = estilo.opacidad
+    if estilo.borde_color is not None:
+        updates.append("borde_color = :borde_color")
+        params["borde_color"] = estilo.borde_color
+    if estilo.borde_grosor is not None:
+        updates.append("borde_grosor = :borde_grosor")
+        params["borde_grosor"] = estilo.borde_grosor
+
+    if updates:
+        sql = f"UPDATE catastro.capas_adicionales SET {', '.join(updates)} WHERE tabla_db = :tabla_db"
+        db.execute(text(sql), params)
+        db.commit()
+    return {"message": "Estilo de capa actualizado correctamente"}
+
 @router.delete("/capa-adicional/{tabla_db}")
 async def delete_capa_adicional(
     tabla_db: str,
@@ -1509,6 +1556,79 @@ async def delete_capa_adicional(
         )
         db.commit()
         return {"message": "Capa eliminada exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/elemento-adicional/{elemento_id}")
+async def delete_elemento_adicional(
+    elemento_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    try:
+        db.execute(
+            text("DELETE FROM catastro.elementos_adicionales WHERE id = :id"),
+            {"id": elemento_id}
+        )
+        db.commit()
+        return {"message": "Elemento eliminado exitosamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ElementoEstiloUpdate(BaseModel):
+    color: Optional[str] = None
+    opacidad: Optional[float] = None
+    borde_color: Optional[str] = None
+    borde_grosor: Optional[int] = None
+
+@router.put("/elemento-adicional/{elemento_id}/estilo")
+async def update_elemento_estilo(
+    elemento_id: int,
+    estilo: ElementoEstiloUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Actualiza el estilo visual individual (color, opacidad, borde) de un elemento adicional dentro de sus propiedades JSONB.
+    """
+    try:
+        estilo_dict = {k: v for k, v in estilo.dict().items() if v is not None}
+        if not estilo_dict:
+            return {"message": "Sin cambios"}
+        
+        # Merge estilo into propiedades JSONB
+        sql = """
+            UPDATE catastro.elementos_adicionales
+            SET propiedades = coalesce(propiedades, '{}'::jsonb) || jsonb_build_object('_estilo', :estilo_json::jsonb)
+            WHERE id = :id
+        """
+        db.execute(text(sql), {"id": elemento_id, "estilo_json": json.dumps(estilo_dict)})
+        db.commit()
+        return {"message": "Estilo individual actualizado correctamente"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/elemento-adicional/{elemento_id}/estilo")
+async def reset_elemento_estilo(
+    elemento_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Elimina el estilo personalizado individual para volver al estilo por defecto de la capa.
+    """
+    try:
+        sql = """
+            UPDATE catastro.elementos_adicionales
+            SET propiedades = propiedades - '_estilo'
+            WHERE id = :id
+        """
+        db.execute(text(sql), {"id": elemento_id})
+        db.commit()
+        return {"message": "Estilo personalizado reseteado"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

@@ -319,7 +319,8 @@ def procesar_shapefile(
     user_id: int = None,
     fecha_creacion: str = None,
     proyecto_id: int = None,
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None,
+    limite_assignments: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -570,11 +571,40 @@ def procesar_shapefile(
             "lineas_creadas": 0
         }
         
-        # Flujo 1: Capa Adicional (registrar y mover a elementos_adicionales)
-        if import_type == "capa_adicional":
+        # Flujo 1: Capa Adicional o Límites (Cantonal / Parroquial)
+        if import_type in ["capa_adicional", "limite_cantonal", "limite_parroquial"]:
+            color_default = "#a855f7"
+            borde_default = "#7e22ce"
+            nombre_final = nombre_capa
+
+            if import_type == "limite_cantonal":
+                color_default = "#ef4444"  # Rojo para límite cantonal
+                borde_default = "#b91c1c"
+                if not nombre_final:
+                    nombre_final = "Límite Cantonal"
+            elif import_type == "limite_parroquial":
+                color_default = "#06b6d4"  # Cyan para límite parroquial
+                borde_default = "#0891b2"
+                if not nombre_final:
+                    nombre_final = "Límite Parroquial"
+            elif not nombre_final:
+                nombre_final = "Capa Sin Nombre"
+
             res_capa = db.execute(
-                text("INSERT INTO catastro.capas_adicionales (nombre_capa, tabla_db, empresa_id) VALUES (:nombre, :tabla, :emp_id) RETURNING id"),
-                {"nombre": nombre_capa or "Capa Sin Nombre", "tabla": tabla_completa, "emp_id": empresa_id}
+                text("""
+                    INSERT INTO catastro.capas_adicionales 
+                    (nombre_capa, tabla_db, empresa_id, tipo_capa, color, borde_color, opacidad, borde_grosor) 
+                    VALUES (:nombre, :tabla, :emp_id, :tipo_capa, :color, :borde_color, 0.35, 2) 
+                    RETURNING id
+                """),
+                {
+                    "nombre": nombre_final, 
+                    "tabla": tabla_completa, 
+                    "emp_id": empresa_id,
+                    "tipo_capa": import_type,
+                    "color": color_default,
+                    "borde_color": borde_default
+                }
             ).mappings().first()
             
             capa_id = res_capa["id"]
@@ -590,6 +620,216 @@ def procesar_shapefile(
                 """),
                 {"capa_id": capa_id}
             )
+
+            # Sincronización topológica con cantones / ciudades si es límite
+            try:
+                # 1. Asignaciones manuales explícitas desde el visualizador previo
+                if limite_assignments and isinstance(limite_assignments, dict):
+                    raw_fids = db.execute(text(f"SELECT {col_fid} as fid FROM {tabla_completa} ORDER BY {col_fid} ASC")).fetchall()
+                    row_fids = [r[0] for r in raw_fids]
+                    for idx_str, dpa_code in limite_assignments.items():
+                        if not dpa_code:
+                            continue
+                        try:
+                            poly_idx = int(idx_str)
+                            if poly_idx < len(row_fids):
+                                target_fid = row_fids[poly_idx]
+                                dpa_str = str(dpa_code).strip()
+                                if import_type == "limite_cantonal":
+                                    db.execute(text(f"""
+                                        UPDATE catastro.cantones 
+                                        SET geom = (SELECT ST_Multi(ST_Force2D(ST_SetSRID(geom, 32717))) FROM {tabla_completa} WHERE {col_fid} = :tfid)
+                                        WHERE codigo_dpa = :dpa
+                                    """), {"tfid": target_fid, "dpa": dpa_str})
+
+                                    cant_info = db.execute(text("SELECT nombre FROM catastro.cantones WHERE codigo_dpa = :dpa"), {"dpa": dpa_str}).fetchone()
+                                    nom_c = cant_info[0] if cant_info else "Urdaneta"
+
+                                    db.execute(text(f"""
+                                        UPDATE catastro.elementos_adicionales ea
+                                        SET propiedades = ea.propiedades || jsonb_build_object(
+                                            'nombre', :nom,
+                                            'canton', :nom,
+                                            'codigo_dpa', :dpa,
+                                            'tipo_limite', 'Límite Cantonal'
+                                        )
+                                        WHERE ea.capa_id = :cid AND ea.id = (
+                                            SELECT id FROM catastro.elementos_adicionales WHERE capa_id = :cid ORDER BY id ASC OFFSET :off LIMIT 1
+                                        )
+                                    """), {"cid": capa_id, "nom": nom_c, "dpa": dpa_str, "off": poly_idx})
+
+                                elif import_type == "limite_parroquial":
+                                    db.execute(text(f"""
+                                        UPDATE catastro.ciudades 
+                                        SET geom = (SELECT ST_Multi(ST_Force2D(ST_SetSRID(geom, 32717))) FROM {tabla_completa} WHERE {col_fid} = :tfid)
+                                        WHERE codigo_dpa = :dpa
+                                    """), {"tfid": target_fid, "dpa": dpa_str})
+
+                                    parr_info = db.execute(text("SELECT nombre FROM catastro.ciudades WHERE codigo_dpa = :dpa"), {"dpa": dpa_str}).fetchone()
+                                    nom_p = parr_info[0] if parr_info else ("Catarama" if dpa_str == "120650" else "Ricaurte" if dpa_str == "120651" else "Pijullo" if dpa_str == "120652" else "")
+
+                                    db.execute(text(f"""
+                                        UPDATE catastro.elementos_adicionales ea
+                                        SET propiedades = ea.propiedades || jsonb_build_object(
+                                            'nombre', :nom,
+                                            'parroquia', :nom,
+                                            'codigo_dpa', :dpa,
+                                            'canton', 'Urdaneta',
+                                            'codigo_canton', '1206',
+                                            'tipo_limite', 'Límite Parroquial'
+                                        )
+                                        WHERE ea.capa_id = :cid AND ea.id = (
+                                            SELECT id FROM catastro.elementos_adicionales WHERE capa_id = :cid ORDER BY id ASC OFFSET :off LIMIT 1
+                                        )
+                                    """), {"cid": capa_id, "nom": nom_p, "dpa": dpa_str, "off": poly_idx})
+                        except Exception as e_assign:
+                            logging.warning(f"Error asignando polígono {idx_str} a {dpa_code}: {e_assign}")
+
+                # 2. Límite Cantonal
+                if import_type == "limite_cantonal":
+                    if not limite_assignments:
+                        db.execute(text(f"""
+                            UPDATE catastro.cantones 
+                            SET geom = sub.mgeom
+                            FROM (
+                                SELECT ST_Multi(ST_Union(ST_Force2D(ST_SetSRID(geom, 32717)))) as mgeom
+                                FROM {tabla_completa}
+                            ) sub
+                            WHERE catastro.cantones.codigo_dpa = '1206' OR UPPER(catastro.cantones.nombre) = 'URDANETA'
+                        """))
+                    db.execute(text("""
+                        UPDATE catastro.elementos_adicionales
+                        SET propiedades = propiedades || jsonb_build_object(
+                            'nombre', COALESCE(propiedades->>'nombre', 'Urdaneta'),
+                            'tipo_limite', 'Límite Cantonal',
+                            'canton', 'Urdaneta',
+                            'codigo_dpa', '1206',
+                            'provincia', 'Los Ríos',
+                            'codigo_provincia', '12'
+                        )
+                        WHERE capa_id = :cid
+                    """), {"cid": capa_id})
+
+                # 3. Límite Parroquial
+                elif import_type == "limite_parroquial":
+                    db.execute(text("""
+                        UPDATE catastro.elementos_adicionales
+                        SET propiedades = propiedades || jsonb_build_object(
+                            'nombre', 'Pijullo',
+                            'parroquia', 'Pijullo',
+                            'codigo_dpa', '120652',
+                            'canton', 'Urdaneta',
+                            'codigo_canton', '1206',
+                            'tipo_limite', 'Límite Parroquial'
+                        )
+                        WHERE capa_id = :cid AND (propiedades->>'cod_parroq' = '52' OR propiedades->>'codpar' = '52' OR propiedades->>'codigo_dpa' = '120652');
+
+                        UPDATE catastro.elementos_adicionales
+                        SET propiedades = propiedades || jsonb_build_object(
+                            'nombre', 'Ricaurte',
+                            'parroquia', 'Ricaurte',
+                            'codigo_dpa', '120651',
+                            'canton', 'Urdaneta',
+                            'codigo_canton', '1206',
+                            'tipo_limite', 'Límite Parroquial'
+                        )
+                        WHERE capa_id = :cid AND (propiedades->>'cod_parroq' = '51' OR propiedades->>'codpar' = '51' OR propiedades->>'codigo_dpa' = '120651');
+
+                        UPDATE catastro.elementos_adicionales
+                        SET propiedades = propiedades || jsonb_build_object(
+                            'nombre', 'Catarama',
+                            'parroquia', 'Catarama',
+                            'codigo_dpa', '120650',
+                            'canton', 'Urdaneta',
+                            'codigo_canton', '1206',
+                            'tipo_limite', 'Límite Parroquial'
+                        )
+                        WHERE capa_id = :cid AND (propiedades->>'cod_parroq' = '50' OR propiedades->>'codpar' = '50' OR propiedades->>'codigo_dpa' = '120650');
+                    """), {"cid": capa_id})
+
+                    if not limite_assignments:
+                        cols_info = db.execute(text(f"""
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_schema = 'catastro' AND table_name = :tbl
+                        """), {"tbl": tabla_completa.split('.')[-1]}).fetchall()
+                        col_names = [r[0] for r in cols_info if r[0] not in ['id', 'geom', 'obs', 'observacion', 'observaciones', 'descripcion', 'ordenanza']]
+
+                        for col in col_names:
+                            # Catarama (120650)
+                            db.execute(text(f"""
+                                UPDATE catastro.ciudades c
+                                SET geom = sub.mgeom
+                                FROM (
+                                    SELECT ST_Multi(ST_Union(ST_Force2D(ST_SetSRID(geom, 32717)))) as mgeom
+                                    FROM {tabla_completa}
+                                    WHERE UPPER(CAST({col} AS TEXT)) ILIKE '%CATARAMA%' OR CAST({col} AS TEXT) IN ('120650', '50')
+                                ) sub
+                                WHERE c.codigo_dpa = '120650' AND sub.mgeom IS NOT NULL
+                            """))
+                            # Ricaurte (120651)
+                            db.execute(text(f"""
+                                UPDATE catastro.ciudades c
+                                SET geom = sub.mgeom
+                                FROM (
+                                    SELECT ST_Multi(ST_Union(ST_Force2D(ST_SetSRID(geom, 32717)))) as mgeom
+                                    FROM {tabla_completa}
+                                    WHERE UPPER(CAST({col} AS TEXT)) ILIKE '%RICAURTE%' OR CAST({col} AS TEXT) IN ('120651', '51')
+                                ) sub
+                                WHERE c.codigo_dpa = '120651' AND sub.mgeom IS NOT NULL
+                            """))
+                            # Pijullo (120652)
+                            db.execute(text(f"""
+                                UPDATE catastro.ciudades c
+                                SET geom = sub.mgeom
+                                FROM (
+                                    SELECT ST_Multi(ST_Union(ST_Force2D(ST_SetSRID(geom, 32717)))) as mgeom
+                                    FROM {tabla_completa}
+                                    WHERE UPPER(CAST({col} AS TEXT)) ILIKE '%PIJULLO%' OR CAST({col} AS TEXT) IN ('120652', '52')
+                                ) sub
+                                WHERE c.codigo_dpa = '120652' AND sub.mgeom IS NOT NULL
+                            """))
+
+                    # Enriquecer elementos_adicionales con los códigos y nombres oficiales restantes
+                    db.execute(text("""
+                        UPDATE catastro.elementos_adicionales ea
+                        SET propiedades = ea.propiedades || jsonb_build_object(
+                            'nombre', c.nombre,
+                            'tipo_limite', 'Límite Parroquial',
+                            'canton', 'Urdaneta',
+                            'codigo_canton', '1206',
+                            'parroquia', c.nombre,
+                            'codigo_dpa', c.codigo_dpa
+                        )
+                        FROM catastro.ciudades c
+                        WHERE ea.capa_id = :cid
+                          AND c.codigo_dpa IN ('120650', '120651', '120652')
+                          AND c.geom IS NOT NULL
+                          AND (ea.propiedades->>'nombre' IS NULL OR ea.propiedades->>'nombre' = '')
+                          AND (ST_Intersects(ea.geom, c.geom) OR ST_Within(ST_Centroid(ea.geom), c.geom))
+                    """), {"cid": capa_id})
+
+                # 4. Asignar nombre representativo para cualquier capa adicional que no tenga 'nombre'
+                db.execute(text("""
+                    UPDATE catastro.elementos_adicionales
+                    SET propiedades = propiedades || jsonb_build_object(
+                        'nombre', COALESCE(
+                            propiedades->>'nombre',
+                            propiedades->>'parroquia',
+                            propiedades->>'canton',
+                            propiedades->>'name',
+                            propiedades->>'etiqueta',
+                            propiedades->>'dpa_despar',
+                            propiedades->>'dpa_descan',
+                            propiedades->>'codigo_catastral',
+                            propiedades->>'codigo',
+                            'Elemento ' || id
+                        )
+                    )
+                    WHERE capa_id = :cid AND (propiedades->>'nombre' IS NULL OR propiedades->>'nombre' = '');
+                """), {"cid": capa_id})
+            except Exception as e_sync:
+                logging.warning(f"Advertencia sincronizando límites topológicos: {e_sync}")
             
             db.execute(text(f"DROP TABLE {tabla_completa} CASCADE"))
             db.commit()
