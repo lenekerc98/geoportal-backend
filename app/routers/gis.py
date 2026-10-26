@@ -280,6 +280,130 @@ async def check_predio_conflict(req: ConflictCheckRequest, db: Session = Depends
 
     return resultado
 
+
+class DetectarUbicacionRequest(BaseModel):
+    geojson: Optional[dict] = None
+    geom_text: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    es_utm: Optional[bool] = True
+    empresa_id: Optional[int] = None
+
+@router.post("/detectar-ubicacion")
+@router.post("/predios/detectar-ubicacion")
+async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+    """
+    Fase 2: Detección espacial automática por PostGIS.
+    Determina Provincia (12), Cantón (06), Parroquia (50 Catarama, 51 Ricaurte, 52 Pijullo)
+    y sugiere Sector para autocompletar la clave catastral de 19 dígitos.
+    """
+    import json
+    pt_geom_sql = None
+    params = {}
+
+    if req.lat is not None and req.lng is not None:
+        pt_geom_sql = "ST_Transform(ST_SetSRID(ST_Point(:lng, :lat), 4326), 32717)"
+        params["lng"] = float(req.lng)
+        params["lat"] = float(req.lat)
+    elif req.x is not None and req.y is not None:
+        pt_geom_sql = "ST_SetSRID(ST_Point(:x, :y), 32717)"
+        params["x"] = float(req.x)
+        params["y"] = float(req.y)
+    elif req.geojson:
+        params["geojson"] = json.dumps(req.geojson)
+        if getattr(req, "es_utm", True):
+            pt_geom_sql = "ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 32717))"
+        else:
+            pt_geom_sql = "ST_Centroid(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), 32717))"
+    elif req.geom_text and req.geom_text.strip():
+        # Intentar extraer primer par de coordenadas
+        lines = [line.strip() for line in req.geom_text.strip().splitlines() if line.strip()]
+        for line in lines:
+            parts = [p for p in re.split(r'[\s,;]+', line) if p]
+            if len(parts) >= 2:
+                try:
+                    c0, c1 = float(parts[0]), float(parts[1])
+                    if abs(c0) <= 180 and abs(c1) <= 90:
+                        pt_geom_sql = "ST_Transform(ST_SetSRID(ST_Point(:c0, :c1), 4326), 32717)"
+                    else:
+                        pt_geom_sql = "ST_SetSRID(ST_Point(:c0, :c1), 32717)"
+                    params["c0"] = c0
+                    params["c1"] = c1
+                    break
+                except ValueError:
+                    continue
+
+    if not pt_geom_sql:
+        # Fallback predeterminado a Catarama Urdaneta
+        return {
+            "cod_provincia": "12",
+            "provincia": "LOS RÍOS",
+            "cod_canton": "06",
+            "canton": "URDANETA",
+            "cod_parroquia": "50",
+            "parroquia": "CATARAMA",
+            "id_provincia": 12,
+            "id_canton": 127,
+            "id_ciudad": 807,
+            "sector": "RURAL",
+            "cod_sector": "01",
+            "prefijo_clave": "120650"
+        }
+
+    # Consulta espacial con las 3 parroquias de Urdaneta (120650, 120651, 120652)
+    sql_parr = text(f"""
+        SELECT 
+            c.id as id_ciudad,
+            UPPER(c.nombre) as parroquia,
+            c.codigo_dpa,
+            RIGHT(c.codigo_dpa, 2) as cod_parroquia
+        FROM catastro.ciudades c
+        WHERE c.codigo_dpa LIKE '1206%'
+        ORDER BY 
+            CASE WHEN ST_Intersects({pt_geom_sql}, c.geom) THEN 0 ELSE 1 END,
+            ST_Distance({pt_geom_sql}, c.geom) ASC
+        LIMIT 1;
+    """)
+    parr_row = db.execute(sql_parr, params).fetchone()
+
+    id_ciudad = getattr(parr_row, "id_ciudad", 807) if parr_row else 807
+    parroquia_nom = getattr(parr_row, "parroquia", "CATARAMA") if parr_row else "CATARAMA"
+    cod_parroquia = getattr(parr_row, "cod_parroquia", "50") if parr_row else "50"
+
+    # Consulta para sugerir sector de predios cercanos
+    sector_sugerido = "RURAL"
+    try:
+        sql_sec = text(f"""
+            SELECT sector, round(CAST(ST_Distance({pt_geom_sql}, geom) AS numeric), 1) as dist_m
+            FROM catastro.predio
+            WHERE sector IS NOT NULL AND TRIM(sector) <> '' AND geom IS NOT NULL
+            ORDER BY ST_Distance({pt_geom_sql}, geom) ASC
+            LIMIT 1;
+        """)
+        sec_row = db.execute(sql_sec, params).fetchone()
+        if sec_row and sec_row[1] is not None and float(sec_row[1]) <= 800.0:
+            sector_sugerido = str(sec_row[0]).strip().upper()
+    except Exception as e:
+        pass
+
+    return {
+        "cod_provincia": "12",
+        "provincia": "LOS RÍOS",
+        "cod_canton": "06",
+        "canton": "URDANETA",
+        "cod_parroquia": cod_parroquia,
+        "parroquia": parroquia_nom,
+        "id_provincia": 12,
+        "id_canton": 127,
+        "id_ciudad": id_ciudad,
+        "sector": sector_sugerido,
+        "cod_sector": "01",
+        "prefijo_clave": f"1206{cod_parroquia}"
+    }
+
+
 @router.post("/predios", status_code=status.HTTP_201_CREATED)
 async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
@@ -397,10 +521,34 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     id_prov = getattr(dpa_res, "id_provincia", None) if dpa_res else None
     id_cant = getattr(dpa_res, "id_canton", None) if dpa_res else None
     id_ciud = getattr(dpa_res, "id_ciudad", None) if dpa_res else None
-    if not id_ciud and getattr(predio, 'parroquia', None):
-        ciud_match = db.execute(text("SELECT id FROM catastro.ciudades WHERE UPPER(nombre) = UPPER(:nom) LIMIT 1"), {"nom": predio.parroquia.strip()}).fetchone()
+    parroquia_final = predio.parroquia.strip().upper() if getattr(predio, 'parroquia', None) else None
+    if not id_ciud and parroquia_final:
+        ciud_match = db.execute(text("SELECT id FROM catastro.ciudades WHERE UPPER(nombre) = UPPER(:nom) LIMIT 1"), {"nom": parroquia_final}).fetchone()
         if ciud_match:
             id_ciud = ciud_match[0]
+
+    # Fase 2: Detección espacial automática si aún falta id_ciudad o parroquia
+    if not id_ciud or not parroquia_final:
+        try:
+            auto_ciud = db.execute(text(f"""
+                SELECT c.id, UPPER(c.nombre), RIGHT(c.codigo_dpa, 2)
+                FROM catastro.ciudades c
+                WHERE c.codigo_dpa LIKE '1206%'
+                ORDER BY 
+                    CASE WHEN ST_Intersects({geom_sql}, c.geom) THEN 0 ELSE 1 END,
+                    ST_Distance({geom_sql}, c.geom) ASC
+                LIMIT 1;
+            """), {"geojson": geojson_str}).fetchone()
+            if auto_ciud:
+                id_ciud = auto_ciud[0]
+                if not parroquia_final:
+                    parroquia_final = auto_ciud[1]
+                if not id_prov:
+                    id_prov = 12
+                if not id_cant:
+                    id_cant = 127
+        except Exception as e:
+            logging.warning(f"Error en detección espacial de parroquia: {e}")
 
     is_brig = getattr(current_user, 'is_brigadista', False) or getattr(current_user, 'role', '') == 'brigadista'
     tipo_creador = 'BRIGADISTA' if is_brig else 'REGISTRADO'
@@ -429,7 +577,7 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "tipo_creador": tipo_creador,
             "creador_nom": creador_nom,
             "sector": predio.sector.strip().upper() if predio.sector else None,
-            "parroquia": predio.parroquia.strip().upper() if predio.parroquia else None
+            "parroquia": parroquia_final
         })
         new_id = result.scalar()
         
