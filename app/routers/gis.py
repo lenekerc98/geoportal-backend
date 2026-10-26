@@ -14,6 +14,7 @@ import psycopg2
 import logging
 import functools
 import math
+import re
 from datetime import timezone
 
 from app.core.database import get_db
@@ -293,7 +294,7 @@ class DetectarUbicacionRequest(BaseModel):
 
 @router.post("/detectar-ubicacion")
 @router.post("/predios/detectar-ubicacion")
-async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
+async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depends(get_db)):
     """
     Fase 2: Detección espacial automática por PostGIS.
     Determina Provincia (12), Cantón (06), Parroquia (50 Catarama, 51 Ricaurte, 52 Pijullo)
