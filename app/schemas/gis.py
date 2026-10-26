@@ -192,6 +192,8 @@ class PredioCartaUpdate(BaseModel):
     codigo_carta: Optional[str] = None
     nombre_carta: Optional[str] = None
     cuadricula_carta: Optional[str] = None
+    sector: Optional[str] = None
+    parroquia: Optional[str] = None
 
 class CartaTopograficaBase(BaseModel):
     codigo: str

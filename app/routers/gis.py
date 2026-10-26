@@ -113,7 +113,10 @@ async def get_predios_geojson(
                         'predio_padre_id', predio_padre_id,
                         'proyecto_id', proyecto_id,
                         'sector', sector,
-                        'parroquia', parroquia
+                        'parroquia', parroquia,
+                        'codigo_carta', codigo_carta,
+                        'nombre_carta', nombre_carta,
+                        'cuadricula_carta', cuadricula_carta
                     )
                 )
             ), '[]'::json)
@@ -2067,21 +2070,25 @@ async def update_predio_carta(
     cod_carta = (carta_data.codigo_carta or "").strip()
     nom_carta = (carta_data.nombre_carta or "").strip()
     cuad_carta = (carta_data.cuadricula_carta or "ZONA 17S").strip()
+    sec = carta_data.sector.strip().upper() if carta_data.sector else None
+    parr = carta_data.parroquia.strip().upper() if carta_data.parroquia else None
 
     if id_o_codigo.isdigit():
         query = text("""
             UPDATE catastro.predio 
-            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula 
+            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula,
+                sector = COALESCE(:sector, sector), parroquia = COALESCE(:parroquia, parroquia)
             WHERE id = :id_or_cod
         """)
-        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "id_or_cod": int(id_o_codigo)}
+        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "sector": sec, "parroquia": parr, "id_or_cod": int(id_o_codigo)}
     else:
         query = text("""
             UPDATE catastro.predio 
-            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula 
+            SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula,
+                sector = COALESCE(:sector, sector), parroquia = COALESCE(:parroquia, parroquia)
             WHERE cod_catastral = :id_or_cod
         """)
-        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "id_or_cod": id_o_codigo}
+        params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "sector": sec, "parroquia": parr, "id_or_cod": id_o_codigo}
     
     result = db.execute(query, params)
     if result.rowcount == 0:
