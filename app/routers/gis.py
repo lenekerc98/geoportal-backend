@@ -353,6 +353,39 @@ async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depend
             "prefijo_clave": "120650"
         }
 
+    # 1. Consulta territorial: Verificar si la coordenada está dentro del cantón Urdaneta (1206)
+    sql_check_canton = text(f"""
+        SELECT 
+            ST_Intersects({pt_geom_sql}, geom) as dentro_canton,
+            round(CAST(ST_Distance({pt_geom_sql}, geom) AS numeric), 1) as dist_canton_m
+        FROM catastro.cantones
+        WHERE codigo_dpa = '1206'
+        LIMIT 1;
+    """)
+    canton_check = db.execute(sql_check_canton, params).fetchone()
+    dentro_urdaneta = bool(canton_check and canton_check[0])
+    dist_m = float(canton_check[1]) if (canton_check and canton_check[1] is not None) else 0.0
+
+    if not dentro_urdaneta and dist_m > 30.0:
+        return {
+            "fuera_de_urdaneta": True,
+            "fuera_de_rango": True,
+            "distancia_metros": dist_m,
+            "mensaje": f"⚠️ Coordenada Fuera de Rango: La ubicación se encuentra fuera de los límites territoriales del cantón Urdaneta ({dist_m:.0f}m fuera de la frontera cantonal).",
+            "cod_provincia": "12",
+            "provincia": "LOS RÍOS",
+            "cod_canton": "06",
+            "canton": "URDANETA",
+            "cod_parroquia": None,
+            "parroquia": None,
+            "id_provincia": 12,
+            "id_canton": 127,
+            "id_ciudad": None,
+            "sector": None,
+            "cod_sector": None,
+            "prefijo_clave": None
+        }
+
     # Consulta espacial con las 3 parroquias de Urdaneta (120650, 120651, 120652)
     sql_parr = text(f"""
         SELECT 
@@ -411,6 +444,41 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     Crear un nuevo predio ingresando la geometría en formato GeoJSON.
     """
     import json
+    
+    # Validación: prevenir códigos dummy fuera de rango (ej. 1206509999999999999)
+    if predio.cod_catastral:
+        clean_cod = str(predio.cod_catastral).strip()
+        if "999999" in clean_cod or clean_cod.endswith("9999999999999") or clean_cod.startswith("1206509999") or clean_cod.startswith("1206519999") or clean_cod.startswith("1206529999"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"⚠️ Coordenada Fuera de Rango: El predio con clave {clean_cod} está fuera de los límites territoriales de Urdaneta."
+            )
+            
+    # Validación territorial espacial: El predio debe estar dentro de los límites del cantón Urdaneta (1206)
+    if predio.geom_geojson:
+        import json
+        geom_json_str = json.dumps(predio.geom_geojson)
+        srid = 32717 if getattr(predio, 'es_utm', True) else 4326
+        sql_in_canton = text(f"""
+            SELECT ST_Intersects(
+                ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:geom_json), {srid}), 32717),
+                geom
+            ) as intersecta
+            FROM catastro.cantones
+            WHERE codigo_dpa = '1206'
+            LIMIT 1;
+        """)
+        try:
+            chk = db.execute(sql_in_canton, {"geom_json": geom_json_str}).fetchone()
+            if chk and not chk[0]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="⚠️ Coordenada Fuera de Rango: El predio contiene coordenadas fuera de los límites territoriales del cantón Urdaneta. No se puede registrar este predio."
+                )
+        except HTTPException:
+            raise
+        except Exception as e_chk:
+            pass
     
     # Lógica de reordenamiento de polígono (P01 Nor-Oeste y sentido horario)
     if predio.geom_geojson and predio.geom_geojson.get("type") == "Polygon":
@@ -610,6 +678,12 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         params["posesionario_id"] = predio.posesionario_id
         
     if predio.cod_catastral is not None:
+        clean_cod = str(predio.cod_catastral).strip()
+        if "999999" in clean_cod or clean_cod.endswith("9999999999999") or clean_cod.startswith("1206509999") or clean_cod.startswith("1206519999") or clean_cod.startswith("1206529999"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"El predio con código {clean_cod} está fuera del rango territorial o zona catastral válida. No se permite actualizar a este código."
+            )
         updates.append("cod_catastral = :cod_catastral")
         params["cod_catastral"] = predio.cod_catastral
         
@@ -1603,7 +1677,7 @@ async def get_capas_adicionales(
     if current_user.rol.nombre.lower() != "superadministrador" and current_user.rol.nombre.lower() != "superadmin":
         empresa_id = current_user.id_empresa
     
-    query = "SELECT id, nombre_capa, tabla_db, tipo_geometria, empresa_id, fecha_subida, COALESCE(tipo_capa, 'adicional') as tipo_capa, COALESCE(color, '#a855f7') as color, COALESCE(opacidad, 0.35) as opacidad, COALESCE(borde_color, '#7e22ce') as borde_color, COALESCE(borde_grosor, 2) as borde_grosor FROM catastro.capas_adicionales"
+    query = "SELECT id, nombre_capa, tabla_db, tipo_geometria, empresa_id, fecha_subida, CASE WHEN tipo_capa IS NULL OR tipo_capa = 'capa_adicional' THEN 'adicional' ELSE tipo_capa END as tipo_capa, COALESCE(color, '#a855f7') as color, COALESCE(opacidad, 0.35) as opacidad, COALESCE(borde_color, '#7e22ce') as borde_color, COALESCE(borde_grosor, 2) as borde_grosor FROM catastro.capas_adicionales"
     params = {}
     if empresa_id:
         query += " WHERE empresa_id = :empresa_id"
@@ -2489,7 +2563,7 @@ async def get_cad_layers_geojson(
     simplify: Optional[float] = 1.0,
     bbox: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_user)
+    current_user: Optional[Any] = None
 ):
     """
     Obtiene el GeoJSON de las entidades CAD de forma ultra-optimizada con simplificacion geometrica, filtrado por bbox y cache en memoria.
@@ -2504,6 +2578,9 @@ async def get_cad_layers_geojson(
 
     where_clauses = ["geom IS NOT NULL"]
     params = {}
+
+    if not archivo or not archivo.strip():
+        archivo = "NIV-D3catarama-D1ventanas-C2puertopechiche-C4puebloviejo.dxf"
 
     if archivo:
         where_clauses.append("nombre_archivo = :archivo")

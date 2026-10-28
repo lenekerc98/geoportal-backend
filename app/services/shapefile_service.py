@@ -547,6 +547,7 @@ def procesar_shapefile(
         # Resolver columnas de mapeo
         col_cedula = resolver_columna(mapping.get("cedula"))
         col_nombre = resolver_columna(mapping.get("nombre_posesionario"))
+        col_apellidos = resolver_columna(mapping.get("apellidos")) or resolver_columna("apellidos") or resolver_columna("apellido")
         col_codigo = resolver_columna(mapping.get("cod_catastral"))
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
@@ -555,13 +556,14 @@ def procesar_shapefile(
 
         if col_cedula and not SAFE_IDENT.match(str(col_cedula)): col_cedula = None
         if col_nombre and not SAFE_IDENT.match(str(col_nombre)): col_nombre = None
+        if col_apellidos and (not SAFE_IDENT.match(str(col_apellidos)) or col_apellidos == col_nombre): col_apellidos = None
         if col_codigo and not SAFE_IDENT.match(str(col_codigo)): col_codigo = None
         if col_fecha_adju and not SAFE_IDENT.match(str(col_fecha_adju)): col_fecha_adju = None
         if col_tramite and not SAFE_IDENT.match(str(col_tramite)): col_tramite = None
         if col_institucion and not SAFE_IDENT.match(str(col_institucion)): col_institucion = None
         if col_sector and not SAFE_IDENT.match(str(col_sector)): col_sector = None
 
-        logging.info(f"Columnas resueltas: cedula={col_cedula}, nombre={col_nombre}, codigo={col_codigo}, fecha_adju={col_fecha_adju}, tramite={col_tramite}, institucion={col_institucion}, sector={col_sector}")
+        logging.info(f"Columnas resueltas: cedula={col_cedula}, nombre={col_nombre}, apellidos={col_apellidos}, codigo={col_codigo}, fecha_adju={col_fecha_adju}, tramite={col_tramite}, institucion={col_institucion}, sector={col_sector}")
         
         resultados = {
             "tabla_cruda": tabla_completa,
@@ -572,10 +574,11 @@ def procesar_shapefile(
         }
         
         # Flujo 1: Capa Adicional o Límites (Cantonal / Parroquial)
-        if import_type in ["capa_adicional", "limite_cantonal", "limite_parroquial"]:
+        if import_type in ["capa_adicional", "adicional", "limite_cantonal", "limite_parroquial"]:
             color_default = "#a855f7"
             borde_default = "#7e22ce"
             nombre_final = nombre_capa
+            tipo_capa_db = "adicional" if import_type in ["capa_adicional", "adicional"] else import_type
 
             if import_type == "limite_cantonal":
                 color_default = "#ef4444"  # Rojo para límite cantonal
@@ -601,7 +604,7 @@ def procesar_shapefile(
                     "nombre": nombre_final, 
                     "tabla": tabla_completa, 
                     "emp_id": empresa_id,
-                    "tipo_capa": import_type,
+                    "tipo_capa": tipo_capa_db,
                     "color": color_default,
                     "borde_color": borde_default
                 }
@@ -615,7 +618,15 @@ def procesar_shapefile(
                     SELECT 
                         :capa_id,
                         ST_Force2D(ST_SetSRID(geom, 32717)),
-                        row_to_json(t)::jsonb - 'geom' - 'id' || '{{"codigo_catastral": ""}}'::jsonb
+                        (row_to_json(t)::jsonb - 'geom' - 'id') || jsonb_build_object(
+                            'codigo_catastral', COALESCE(
+                                NULLIF(TRIM(row_to_json(t)::jsonb->>'codigo_catastral'), ''),
+                                NULLIF(TRIM(row_to_json(t)::jsonb->>'cod_catastral'), ''),
+                                NULLIF(TRIM(row_to_json(t)::jsonb->>'cod_cat'), ''),
+                                NULLIF(TRIM(row_to_json(t)::jsonb->>'clave_cata'), ''),
+                                ''
+                            )
+                        )
                     FROM {tabla_completa} t
                 """),
                 {"capa_id": capa_id}
@@ -814,19 +825,22 @@ def procesar_shapefile(
                     UPDATE catastro.elementos_adicionales
                     SET propiedades = propiedades || jsonb_build_object(
                         'nombre', COALESCE(
-                            propiedades->>'nombre',
-                            propiedades->>'parroquia',
-                            propiedades->>'canton',
-                            propiedades->>'name',
-                            propiedades->>'etiqueta',
-                            propiedades->>'dpa_despar',
-                            propiedades->>'dpa_descan',
-                            propiedades->>'codigo_catastral',
-                            propiedades->>'codigo',
+                            NULLIF(TRIM(propiedades->>'nombre'), ''),
+                            NULLIF(TRIM(COALESCE(propiedades->>'nombres', '') || ' ' || COALESCE(propiedades->>'apellidos', '')), ''),
+                            NULLIF(TRIM(propiedades->>'parroquia'), ''),
+                            NULLIF(TRIM(propiedades->>'canton'), ''),
+                            NULLIF(TRIM(propiedades->>'name'), ''),
+                            NULLIF(TRIM(propiedades->>'etiqueta'), ''),
+                            NULLIF(TRIM(propiedades->>'dpa_despar'), ''),
+                            NULLIF(TRIM(propiedades->>'dpa_descan'), ''),
+                            NULLIF(TRIM(propiedades->>'codigo_catastral'), ''),
+                            NULLIF(TRIM(propiedades->>'cod_cat'), ''),
+                            NULLIF(TRIM(propiedades->>'codigo'), ''),
+                            NULLIF(TRIM(propiedades->>'recinto'), ''),
                             'Elemento ' || id
                         )
                     )
-                    WHERE capa_id = :cid AND (propiedades->>'nombre' IS NULL OR propiedades->>'nombre' = '');
+                    WHERE capa_id = :cid AND (propiedades->>'nombre' IS NULL OR TRIM(propiedades->>'nombre') = '');
                 """), {"cid": capa_id})
             except Exception as e_sync:
                 logging.warning(f"Advertencia sincronizando límites topológicos: {e_sync}")
@@ -836,19 +850,23 @@ def procesar_shapefile(
             return resultados
             
         # Flujo 2: Módulo Catastral Base
+        expr_nombre = f'TRIM(CAST("{col_nombre}" AS VARCHAR))' if col_nombre else None
+        if col_nombre and col_apellidos:
+            expr_nombre = f'TRIM(COALESCE(CAST("{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST("{col_apellidos}" AS VARCHAR), \'\'))'
+
         # 5. Sincronizar Posesionarios
-        if col_cedula and col_nombre:
+        if col_cedula and expr_nombre:
             query_posesionarios = text(f"""
                 INSERT INTO catastro.posesionario (cedula, nombre, empresa_id)
                 SELECT DISTINCT 
                     TRIM(CAST("{col_cedula}" AS VARCHAR)), 
-                    TRIM(CAST("{col_nombre}" AS VARCHAR)), 
+                    {expr_nombre}, 
                     :empresa_id
                 FROM {tabla_completa}
                 WHERE "{col_cedula}" IS NOT NULL 
                   AND TRIM(CAST("{col_cedula}" AS VARCHAR)) <> '' 
-                  AND "{col_nombre}" IS NOT NULL 
-                  AND TRIM(CAST("{col_nombre}" AS VARCHAR)) <> ''
+                  AND {expr_nombre} IS NOT NULL 
+                  AND {expr_nombre} <> ''
                 ON CONFLICT (cedula) DO UPDATE SET nombre = EXCLUDED.nombre
             """)
             res = db.execute(query_posesionarios, {"empresa_id": empresa_id})
@@ -857,7 +875,7 @@ def procesar_shapefile(
         # 6. Sincronizar Predios y Códigos
         query_leer = f"SELECT {col_fid} as id, geom"
         if col_cedula: query_leer += f', "{col_cedula}" as val_cedula'
-        if col_nombre: query_leer += f', "{col_nombre}" as val_nombre'
+        if expr_nombre: query_leer += f', {expr_nombre} as val_nombre'
         if col_codigo: query_leer += f', "{col_codigo}" as val_codigo'
         if col_fecha_adju: query_leer += f', "{col_fecha_adju}" as val_fecha_adju'
         if col_tramite: query_leer += f', "{col_tramite}" as val_tramite'
@@ -1139,6 +1157,9 @@ def analizar_shapefile(
 
         col_cedula = resolver_columna(mapping.get("cedula"))
         col_nombre = resolver_columna(mapping.get("nombre_posesionario"))
+        col_apellidos = resolver_columna(mapping.get("apellidos")) or resolver_columna("apellidos") or resolver_columna("apellido")
+        if col_apellidos and (not SAFE_IDENT.match(str(col_apellidos)) or col_apellidos == col_nombre):
+            col_apellidos = None
         col_codigo = resolver_columna(mapping.get("cod_catastral"))
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
@@ -1149,7 +1170,9 @@ def analizar_shapefile(
         q_cols = [f"t.{col_fid} as id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
         if col_codigo: q_cols.append(f'CAST(t."{col_codigo}" AS VARCHAR) as incoming_codigo')
         else: q_cols.append("NULL as incoming_codigo")
-        if col_nombre: q_cols.append(f'CAST(t."{col_nombre}" AS VARCHAR) as incoming_propietario')
+        if col_nombre and col_apellidos:
+            q_cols.append(f'NULLIF(TRIM(COALESCE(CAST(t."{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST(t."{col_apellidos}" AS VARCHAR), \'\')), \'\') as incoming_propietario')
+        elif col_nombre: q_cols.append(f'CAST(t."{col_nombre}" AS VARCHAR) as incoming_propietario')
         else: q_cols.append("NULL as incoming_propietario")
         if col_cedula: q_cols.append(f'CAST(t."{col_cedula}" AS VARCHAR) as incoming_cedula')
         else: q_cols.append("NULL as incoming_cedula")
@@ -1363,6 +1386,9 @@ def confirmar_importacion_shapefile(
 
         col_cedula = resolver_columna(mapping.get("cedula"))
         col_nombre = resolver_columna(mapping.get("nombre_posesionario"))
+        col_apellidos = resolver_columna(mapping.get("apellidos")) or resolver_columna("apellidos") or resolver_columna("apellido")
+        if col_apellidos and (not SAFE_IDENT.match(str(col_apellidos)) or col_apellidos == col_nombre):
+            col_apellidos = None
         col_codigo = resolver_columna(mapping.get("cod_catastral"))
         col_fecha_adju = resolver_columna(mapping.get("fecha_adjudicacion"))
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
@@ -1372,7 +1398,9 @@ def confirmar_importacion_shapefile(
         # Consultar filas de staging
         q_cols = [f"{col_fid} as id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
         if col_codigo: q_cols.append(f'"{col_codigo}" as val_codigo')
-        if col_nombre: q_cols.append(f'"{col_nombre}" as val_nombre')
+        if col_nombre and col_apellidos:
+            q_cols.append(f'NULLIF(TRIM(COALESCE(CAST("{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST("{col_apellidos}" AS VARCHAR), \'\')), \'\') as val_nombre')
+        elif col_nombre: q_cols.append(f'"{col_nombre}" as val_nombre')
         if col_cedula: q_cols.append(f'"{col_cedula}" as val_cedula')
         if col_fecha_adju: q_cols.append(f'"{col_fecha_adju}" as val_fecha_adju')
         if col_tramite: q_cols.append(f'"{col_tramite}" as val_tramite')
