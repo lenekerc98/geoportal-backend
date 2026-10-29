@@ -14,14 +14,14 @@ router = APIRouter(
 )
 
 def is_superadmin(user: Usuario):
-    if not user.rol or user.rol.nombre.lower() != "superadmin":
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Se requiere rol de Superadmin para realizar esta acción."
         )
 
 def is_superadmin_or_admin(user: Usuario):
-    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "admin"]:
+    if not user.rol or user.rol.nombre.lower() not in ["superadmin", "superadministrador", "admin", "administrador"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Se requiere rol de Administrador para realizar esta acción."

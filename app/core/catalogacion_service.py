@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 import threading
 from osgeo import gdal, osr
 import psycopg2

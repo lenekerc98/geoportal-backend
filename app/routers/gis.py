@@ -948,19 +948,22 @@ def _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows)
     signed_area *= 0.5
     is_clockwise = signed_area < 0
     
-    # 2. Leftmost
+    # 2. Vértice inicial P01: el más al Noroeste (norm_y - norm_x máximo) para consistencia con PostGIS
+    xs = [float(v.get('coord_x') or 0) for v in verts]
+    ys = [float(v.get('coord_y') or 0) for v in verts]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    dx = (max_x - min_x) or 1.0
+    dy = (max_y - min_y) or 1.0
+
     leftmost_idx = 0
-    min_x = float(verts[0].get('coord_x') or 0)
-    max_y = float(verts[0].get('coord_y') or 0)
-    for i in range(1, n):
-        x = float(verts[i].get('coord_x') or 0)
-        y = float(verts[i].get('coord_y') or 0)
-        if x < min_x - 1e-4:
-            min_x = x
-            max_y = y
-            leftmost_idx = i
-        elif abs(x - min_x) <= 1e-4 and y > max_y:
-            max_y = y
+    best_nw_score = -float('inf')
+    for i in range(n):
+        norm_x = (xs[i] - min_x) / dx
+        norm_y = (ys[i] - min_y) / dy
+        nw_score = norm_y - norm_x
+        if nw_score > best_nw_score:
+            best_nw_score = nw_score
             leftmost_idx = i
             
     ordered_verts = []
@@ -1882,7 +1885,7 @@ async def upload_file_drag_drop(
     # 1. ES ORTOFOTO
     if ext in ['tif', 'tiff', 'ecw', 'jp2']:
         task_id = str(uuid.uuid4())
-        background_tasks.add_task(procesar_ortofoto_background, task_id, temp_path, db)
+        background_tasks.add_task(_run_gdal_thread, task_id, temp_path, {})
         return {
             "mensaje": "Ortofoto recibida. Procesando en segundo plano...",
             "task_id": task_id,
@@ -2028,6 +2031,7 @@ async def upload_file_drag_drop(
 @router.delete("/ortofotos/{filename}")
 async def delete_ortofoto(filename: str, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """Elimina una ortofoto del servidor y la base de datos."""
+    filename = os.path.basename(filename)
     q_search = text("SELECT ruta_completa FROM catastro.ortofotos_catalogo WHERE nombre_archivo = :fname")
     result = db.execute(q_search, {"fname": filename}).fetchone()
     
@@ -2563,7 +2567,7 @@ async def get_cad_layers_geojson(
     simplify: Optional[float] = 1.0,
     bbox: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: Optional[Any] = None
+    current_user: Usuario = Depends(get_current_user)
 ):
     """
     Obtiene el GeoJSON de las entidades CAD de forma ultra-optimizada con simplificacion geometrica, filtrado por bbox y cache en memoria.
@@ -2810,9 +2814,6 @@ async def fraccionar_predio(
             "id_canton": matriz.get("id_canton"),
             "id_ciudad": matriz.get("id_ciudad"),
             "creado_por": user_id,
-            "op_id": op_id,
-            "tipo_creador": tipo_creador,
-            "creador_nom": creador_nom,
             "predio_padre_id": req.matrizId,
             "fecha_creacion": next_fiscal_year
         })
@@ -2848,9 +2849,6 @@ async def fraccionar_predio(
             "id_canton": matriz.get("id_canton"),
             "id_ciudad": matriz.get("id_ciudad"),
             "creado_por": user_id,
-            "op_id": op_id,
-            "tipo_creador": tipo_creador,
-            "creador_nom": creador_nom,
             "predio_padre_id": req.matrizId,
             "fecha_creacion": next_fiscal_year
         })

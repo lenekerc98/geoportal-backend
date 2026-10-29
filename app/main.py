@@ -224,6 +224,7 @@ with engine.connect() as connection:
             try:
                 connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE SET NULL"))
                 connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
+                connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS codigo_anterior VARCHAR(100)"))
             except Exception:
                 pass
 
