@@ -157,21 +157,32 @@ async def get_predios_geojson(
 async def create_posesionario(pos: schemas.PosesionarioBase, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
     Crear un nuevo posesionario. Si la cédula ya existe, devuelve el existente.
+    Si no tiene cédula, busca por nombre o crea uno nuevo sin cédula.
     """
-    query_check = text("SELECT id, cedula, nombre FROM catastro.posesionario WHERE cedula = :cedula")
-    existing = db.execute(query_check, {"cedula": pos.cedula}).mappings().first()
-    if existing:
-        return dict(existing)
+    cedula_clean = pos.cedula.strip() if pos.cedula and pos.cedula.strip() else None
+    nombre_clean = pos.nombre.strip() if pos.nombre else ""
+    
+    if cedula_clean:
+        query_check = text("SELECT id, cedula, nombre FROM catastro.posesionario WHERE cedula = :cedula")
+        existing = db.execute(query_check, {"cedula": cedula_clean}).mappings().first()
+        if existing:
+            return dict(existing)
+    elif nombre_clean:
+        query_check_nom = text("SELECT id, cedula, nombre FROM catastro.posesionario WHERE LOWER(TRIM(nombre)) = LOWER(TRIM(:nombre)) LIMIT 1")
+        existing = db.execute(query_check_nom, {"nombre": nombre_clean}).mappings().first()
+        if existing:
+            return dict(existing)
         
     query = text("""
         INSERT INTO catastro.posesionario (cedula, nombre, empresa_id) 
         VALUES (:cedula, :nombre, :empresa_id) RETURNING id, cedula, nombre;
     """)
     try:
+        emp_id = getattr(current_user, 'id_empresa', None)
         result = db.execute(query, {
-            "cedula": pos.cedula,
-            "nombre": pos.nombre,
-            "empresa_id": current_user.id_empresa
+            "cedula": cedula_clean,
+            "nombre": nombre_clean,
+            "empresa_id": emp_id
         }).mappings().first()
         db.commit()
         return dict(result)
@@ -348,7 +359,7 @@ async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depend
             "id_provincia": 12,
             "id_canton": 127,
             "id_ciudad": 807,
-            "sector": "RURAL",
+            "sector": None,
             "cod_sector": "01",
             "prefijo_clave": "120650"
         }
@@ -407,12 +418,12 @@ async def detectar_ubicacion(req: DetectarUbicacionRequest, db: Session = Depend
     cod_parroquia = getattr(parr_row, "cod_parroquia", "50") if parr_row else "50"
 
     # Consulta para sugerir sector de predios cercanos
-    sector_sugerido = "RURAL"
+    sector_sugerido = None
     try:
         sql_sec = text(f"""
             SELECT sector, round(CAST(ST_Distance({pt_geom_sql}, geom) AS numeric), 1) as dist_m
             FROM catastro.predio
-            WHERE sector IS NOT NULL AND TRIM(sector) <> '' AND geom IS NOT NULL
+            WHERE sector IS NOT NULL AND TRIM(sector) <> '' AND TRIM(UPPER(sector)) <> 'RURAL' AND geom IS NOT NULL
             ORDER BY ST_Distance({pt_geom_sql}, geom) ASC
             LIMIT 1;
         """)
@@ -719,13 +730,14 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         updates.append("estado = :estado")
         params["estado"] = predio.estado
         
-    if predio.sector is not None:
+    fields_set = getattr(predio, 'model_fields_set', None) or getattr(predio, '__fields_set__', set())
+    if "sector" in fields_set or predio.sector is not None:
         updates.append("sector = :sector")
-        params["sector"] = predio.sector.strip().upper() if predio.sector else None
+        params["sector"] = predio.sector.strip().upper() if (predio.sector and predio.sector.strip()) else None
         
-    if predio.parroquia is not None:
+    if "parroquia" in fields_set or predio.parroquia is not None:
         updates.append("parroquia = :parroquia")
-        params["parroquia"] = predio.parroquia.strip().upper() if predio.parroquia else None
+        params["parroquia"] = predio.parroquia.strip().upper() if (predio.parroquia and predio.parroquia.strip()) else None
         
     if predio.geom_geojson is not None:
         params["geojson"] = json.dumps(predio.geom_geojson)
@@ -2884,9 +2896,11 @@ async def fraccionar_predio(
 @router.put("/posesionarios/{id}")
 async def update_posesionario(id: int, pos: schemas.PosesionarioBase, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """Actualizar nombre o cédula de un posesionario"""
+    cedula_clean = pos.cedula.strip() if pos.cedula and pos.cedula.strip() else None
+    nombre_clean = pos.nombre.strip() if pos.nombre else ""
     db.execute(text("UPDATE catastro.posesionario SET nombre = :nombre, cedula = :cedula WHERE id = :id"), {
-        "nombre": pos.nombre,
-        "cedula": pos.cedula,
+        "nombre": nombre_clean,
+        "cedula": cedula_clean,
         "id": id
     })
     db.commit()

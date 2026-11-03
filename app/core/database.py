@@ -46,7 +46,7 @@ SessionLocal = SessionProd
 
 Base = declarative_base()
 
-# Ensure schema "seguridad" is created before tables
+# Asegurar que el esquema "seguridad" exista antes de crear tablas
 event.listen(Base.metadata, 'before_create', CreateSchema('seguridad', if_not_exists=True))
 
 def is_superadmin_request(request: Optional[Request]) -> bool:
@@ -57,9 +57,8 @@ def is_superadmin_request(request: Optional[Request]) -> bool:
         return False
     token = auth_header[7:].strip()
     try:
-        secret_key = os.getenv("SECRET_KEY", "9a2b5c7d8e1f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b")
-        algorithm = os.getenv("ALGORITHM", "HS256")
-        payload = jwt.decode(token, secret_key, algorithms=[algorithm])
+        from app.core.security import SECRET_KEY, ALGORITHM
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         role = str(payload.get("role") or "").lower().strip()
         return role in ["superadmin", "superadministrador"]
     except Exception:

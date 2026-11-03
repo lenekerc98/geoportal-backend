@@ -4,7 +4,7 @@ from typing import List, Optional, Any
 # --- Modelos Relacionales Geográficos (WKT / Atributos) ---
 
 class PosesionarioBase(BaseModel):
-    cedula: str
+    cedula: Optional[str] = None
     nombre: str
 
 class Posesionario(PosesionarioBase):

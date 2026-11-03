@@ -34,7 +34,7 @@ def health_check(db: Session = Depends(get_db)):
     try:
         storage_mode = os.getenv("STORAGE_MODE", "local")
         if storage_mode == "s3":
-            s3_bucket = os.getenv("AWS_S3_BUCKET")
+            s3_bucket = os.getenv("AWS_S3_BUCKET") or os.getenv("DIR_ORTOFOTOS_ORIGINALES")
             if not s3_bucket:
                 health_status["storage"] = "ERROR: AWS_S3_BUCKET not configured"
             else:
