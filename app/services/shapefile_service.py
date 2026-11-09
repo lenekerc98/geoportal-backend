@@ -54,6 +54,33 @@ def calcular_rumbo_py(x1: float, y1: float, x2: float, y2: float) -> Optional[st
     return f"{quadrant[0]} {d}° {m}' {s}\" {quadrant[1]}"
 
 
+def limpiar_codigo_catastral(val) -> str:
+    """
+    Limpia y preserva el código catastral como texto exacto.
+    Evita y repara la notación científica generada por DBF/Excel (ej. '1.20651510500704e+18' -> '1206515105007040000').
+    """
+    if val is None:
+        return ""
+    if isinstance(val, float):
+        val_str = f"{val:.0f}" if val.is_integer() else str(val)
+    else:
+        val_str = str(val).strip()
+
+    if not val_str:
+        return ""
+
+    if 'e+' in val_str.lower():
+        try:
+            from decimal import Decimal
+            d = Decimal(val_str)
+            val_str = f"{d:.0f}"
+        except Exception:
+            pass
+    elif val_str.endswith('.0') and val_str[:-2].replace('-', '').isdigit():
+        val_str = val_str[:-2]
+    return val_str.strip()
+
+
 def procesar_topologia_predio(geom_wkt: str):
     """
     Dada la geometría WKT en EPSG:32717 UTM:
@@ -461,6 +488,7 @@ def procesar_shapefile(
             f"PG:{db_url}",
             shp_file,
             *encoding_flags,
+            "-fieldTypeToString", "All",
             "-lco", f"SCHEMA={schema_raw}",
             "-nln", tabla_raw,
             "-lco", "GEOMETRY_NAME=geom",
@@ -895,7 +923,7 @@ def procesar_shapefile(
         query_leer = f"SELECT {col_fid} as id, geom"
         if col_cedula: query_leer += f', "{col_cedula}" as val_cedula'
         if expr_nombre: query_leer += f', {expr_nombre} as val_nombre'
-        if col_codigo: query_leer += f', "{col_codigo}" as val_codigo'
+        if col_codigo: query_leer += f', CASE WHEN CAST("{col_codigo}" AS VARCHAR) ILIKE \'%e+%\' THEN CAST(CAST("{col_codigo}" AS NUMERIC(30,0)) AS VARCHAR) ELSE CAST("{col_codigo}" AS VARCHAR) END as val_codigo'
         if col_fecha_adju: query_leer += f', "{col_fecha_adju}" as val_fecha_adju'
         if col_tramite: query_leer += f', "{col_tramite}" as val_tramite'
         if col_institucion: query_leer += f', "{col_institucion}" as val_institucion'
@@ -912,7 +940,7 @@ def procesar_shapefile(
                     # 6.1 Asegurar Código Catastral
                     codigo_asignar = None
                     if col_codigo and 'val_codigo' in fila and fila['val_codigo'] and str(fila['val_codigo']).strip():
-                        codigo_asignar = str(fila['val_codigo']).strip()
+                        codigo_asignar = limpiar_codigo_catastral(fila['val_codigo'])
                     else:
                         codigo_asignar = f"TEMP-{uuid.uuid4().hex[:8]}"
                         
@@ -1105,6 +1133,7 @@ def analizar_shapefile(
             f"PG:{db_url}",
             shp_file,
             "-oo", f"ENCODING={detected_encoding}",
+            "-fieldTypeToString", "All",
             "-lco", f"SCHEMA={schema_raw}",
             "-nln", tabla_staging,
             "-lco", "GEOMETRY_NAME=geom",
@@ -1198,7 +1227,8 @@ def analizar_shapefile(
 
         # Extraer todos los registros de la tabla staging
         q_cols = [f"t.{col_fid} as id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
-        if col_codigo: q_cols.append(f'CAST(t."{col_codigo}" AS VARCHAR) as incoming_codigo')
+        if col_codigo:
+            q_cols.append(f'CASE WHEN CAST(t."{col_codigo}" AS VARCHAR) ILIKE \'%e+%\' THEN CAST(CAST(t."{col_codigo}" AS NUMERIC(30,0)) AS VARCHAR) ELSE CAST(t."{col_codigo}" AS VARCHAR) END as incoming_codigo')
         else: q_cols.append("NULL as incoming_codigo")
         if col_nombre and col_apellidos:
             q_cols.append(f'NULLIF(TRIM(COALESCE(CAST(t."{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST(t."{col_apellidos}" AS VARCHAR), \'\')), \'\') as incoming_propietario')
@@ -1219,6 +1249,8 @@ def analizar_shapefile(
         all_features = [dict(r) for r in db.execute(all_features_q).mappings().all()]
 
         # Buscar conflictos espaciales o de código con catastro.predio
+        expr_clean_codigo = f'CASE WHEN CAST(t."{col_codigo}" AS VARCHAR) ILIKE \'%e+%\' THEN CAST(CAST(t."{col_codigo}" AS NUMERIC(30,0)) AS VARCHAR) ELSE CAST(t."{col_codigo}" AS VARCHAR) END' if col_codigo else None
+
         q_conflictos = text(f"""
             SELECT 
                 t.{col_fid} as temp_id,
@@ -1244,7 +1276,7 @@ def analizar_shapefile(
                     ST_Equals(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)
                     OR ST_Intersects(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)
                     OR (
-                        {f'TRIM(CAST(t."{col_codigo}" AS VARCHAR)) = p.cod_catastral' if col_codigo else 'FALSE'}
+                        {f'TRIM({expr_clean_codigo}) = p.cod_catastral' if expr_clean_codigo else 'FALSE'}
                     )
                 )
             )
@@ -1256,7 +1288,7 @@ def analizar_shapefile(
                     NULLIF(LEAST(ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))), ST_Area(p.geom)), 0) > 0.4
                 )
                 OR (
-                    {f'TRIM(CAST(t."{col_codigo}" AS VARCHAR)) = p.cod_catastral' if col_codigo else 'FALSE'}
+                    {f'TRIM({expr_clean_codigo}) = p.cod_catastral' if expr_clean_codigo else 'FALSE'}
                 )
             )
             ORDER BY t.{col_fid} ASC
@@ -1283,7 +1315,7 @@ def analizar_shapefile(
             conflictos.append({
                 "temp_id": tid,
                 "incoming": {
-                    "codigo": f_in.get("incoming_codigo") or "S/C",
+                    "codigo": limpiar_codigo_catastral(f_in.get("incoming_codigo")) or "S/C",
                     "propietario": f_in.get("incoming_propietario") or "S/D",
                     "cedula": f_in.get("incoming_cedula") or "",
                     "area_ha": float(f_in.get("area_ha") or 0.0),
@@ -1294,7 +1326,7 @@ def analizar_shapefile(
                 },
                 "existing": {
                     "id": row["existing_id"],
-                    "codigo": row["existing_codigo"] or "S/C",
+                    "codigo": limpiar_codigo_catastral(row["existing_codigo"]) or "S/C",
                     "propietario": row["existing_propietario"] or "S/D",
                     "cedula": row["existing_cedula"] or "",
                     "area_ha": float(row["existing_area_ha"] or 0.0),
@@ -1310,7 +1342,7 @@ def analizar_shapefile(
         # Contar duplicados internos de códigos en el shapefile
         codigo_counts = {}
         for feat in all_features:
-            c = (feat.get("incoming_codigo") or "").strip()
+            c = limpiar_codigo_catastral(feat.get("incoming_codigo"))
             if c and c != "S/C" and not c.startswith("TEMP-"):
                 codigo_counts[c] = codigo_counts.get(c, 0) + 1
         duplicados_internos = [k for k, v in codigo_counts.items() if v > 1]
@@ -1320,7 +1352,7 @@ def analizar_shapefile(
         for feat in all_features:
             tid = feat['id']
             if tid not in conflict_temp_ids:
-                cod = (feat.get("incoming_codigo") or "").strip()
+                cod = limpiar_codigo_catastral(feat.get("incoming_codigo"))
                 is_rep = False
                 rep_idx = 1
                 if cod and cod != "S/C" and not cod.startswith("TEMP-"):
@@ -1331,7 +1363,7 @@ def analizar_shapefile(
 
                 nuevos.append({
                     "temp_id": tid,
-                    "codigo": feat.get("incoming_codigo") or "S/C",
+                    "codigo": limpiar_codigo_catastral(feat.get("incoming_codigo")) or "S/C",
                     "propietario": feat.get("incoming_propietario") or "S/D",
                     "cedula": feat.get("incoming_cedula") or "",
                     "area_ha": float(feat.get("area_ha") or 0.0),
@@ -1428,7 +1460,8 @@ def confirmar_importacion_shapefile(
 
         # Consultar filas de staging
         q_cols = [f"{col_fid} as id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
-        if col_codigo: q_cols.append(f'"{col_codigo}" as val_codigo')
+        if col_codigo:
+            q_cols.append(f'CASE WHEN CAST("{col_codigo}" AS VARCHAR) ILIKE \'%e+%\' THEN CAST(CAST("{col_codigo}" AS NUMERIC(30,0)) AS VARCHAR) ELSE CAST("{col_codigo}" AS VARCHAR) END as val_codigo')
         if col_nombre and col_apellidos:
             q_cols.append(f'NULLIF(TRIM(COALESCE(CAST("{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST("{col_apellidos}" AS VARCHAR), \'\')), \'\') as val_nombre')
         elif col_nombre: q_cols.append(f'"{col_nombre}" as val_nombre')
@@ -1485,7 +1518,7 @@ def confirmar_importacion_shapefile(
                 continue
 
             if accion == "reemplazar":
-                val_cod = str(fila.get("val_codigo", "") or "").strip()
+                val_cod = limpiar_codigo_catastral(fila.get("val_codigo", ""))
                 val_nom = str(fila.get("val_nombre", "") or "").strip()
                 val_ced = str(fila.get("val_cedula", "") or "").strip()
                 val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
@@ -1605,7 +1638,7 @@ def confirmar_importacion_shapefile(
                 continue
             fila = staging_dict[sid_str]
 
-            val_cod = str(fila.get("val_codigo", "") or "").strip() or f"TEMP-{uuid.uuid4().hex[:8]}"
+            val_cod = limpiar_codigo_catastral(fila.get("val_codigo", "")) or f"TEMP-{uuid.uuid4().hex[:8]}"
 
             # Diferenciación automática si el código ya existe en el sistema o en este lote
             if val_cod in used_codigos:
