@@ -333,3 +333,33 @@ def init_db_schema(engine):
             except Exception:
                 connection.rollback()
 
+            # Creación del esquema de interoperabilidad para datos externos (SQL Server)
+            try:
+                connection.execute(text("CREATE SCHEMA IF NOT EXISTS interoperabilidad"))
+                connection.execute(text("""
+                    CREATE TABLE IF NOT EXISTS interoperabilidad.referencias_prediales (
+                        id SERIAL PRIMARY KEY,
+                        cod_catastral VARCHAR(100),
+                        id_titular VARCHAR(50),
+                        propietario VARCHAR(255),
+                        nombre_predio VARCHAR(255),
+                        sitio VARCHAR(100),
+                        rcx NUMERIC(14, 4),
+                        rcy NUMERIC(14, 4),
+                        area_ref VARCHAR(50),
+                        geom geometry(Point, 32717),
+                        geom_4326 geometry(Point, 4326),
+                        fecha_sincronizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        activo BOOLEAN DEFAULT TRUE,
+                        CONSTRAINT uq_ref_cod_rc UNIQUE (cod_catastral, rcx, rcy)
+                    );
+                """))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_ref_pred_cod ON interoperabilidad.referencias_prediales(cod_catastral)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_ref_pred_titular ON interoperabilidad.referencias_prediales(id_titular)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_ref_pred_geom ON interoperabilidad.referencias_prediales USING GIST(geom)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_ref_pred_geom4326 ON interoperabilidad.referencias_prediales USING GIST(geom_4326)"))
+                connection.commit()
+            except Exception:
+                connection.rollback()
+
+

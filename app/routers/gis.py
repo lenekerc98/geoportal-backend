@@ -722,6 +722,25 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
                 emp_to_use = first_emp[0]
         db.execute(query_codigo, {"cod_catastral": predio.cod_catastral, "posesionario_id": predio.posesionario_id, "empresa_id": emp_to_use})
         
+        # Sincronizar DPA cuando cambia el código catastral
+        cod_prov = predio.cod_catastral[0:2] if len(predio.cod_catastral) >= 2 else None
+        cod_cant = predio.cod_catastral[0:4] if len(predio.cod_catastral) >= 4 else None
+        cod_parr = predio.cod_catastral[0:6] if len(predio.cod_catastral) >= 6 else None
+        if cod_parr:
+            dpa_res = db.execute(text("""
+                SELECT 
+                  (SELECT id FROM catastro.provincias WHERE codigo_dpa = :cod_prov LIMIT 1) as id_provincia,
+                  (SELECT id FROM catastro.cantones WHERE codigo_dpa = :cod_cant LIMIT 1) as id_canton,
+                  (SELECT id FROM catastro.ciudades WHERE codigo_dpa = :cod_parr LIMIT 1) as id_ciudad
+            """), {"cod_prov": cod_prov, "cod_cant": cod_cant, "cod_parr": cod_parr}).fetchone()
+            if dpa_res and dpa_res.id_ciudad:
+                updates.append("id_provincia = :id_provincia")
+                updates.append("id_canton = :id_canton")
+                updates.append("id_ciudad = :id_ciudad")
+                params["id_provincia"] = getattr(dpa_res, "id_provincia", None)
+                params["id_canton"] = getattr(dpa_res, "id_canton", None)
+                params["id_ciudad"] = getattr(dpa_res, "id_ciudad", None)
+        
     if predio.empresa_id is not None:
         updates.append("empresa_id = :empresa_id")
         params["empresa_id"] = predio.empresa_id
@@ -2309,14 +2328,14 @@ async def update_predio_carta(
     cod_carta = (carta_data.codigo_carta or "").strip()
     nom_carta = (carta_data.nombre_carta or "").strip()
     cuad_carta = (carta_data.cuadricula_carta or "ZONA 17S").strip()
-    sec = carta_data.sector.strip().upper() if carta_data.sector else None
-    parr = carta_data.parroquia.strip().upper() if carta_data.parroquia else None
+    sec = carta_data.sector.strip().upper() if carta_data.sector and carta_data.sector.strip() else None
+    parr = carta_data.parroquia.strip().upper() if carta_data.parroquia and carta_data.parroquia.strip() else None
 
     if id_o_codigo.isdigit():
         query = text("""
             UPDATE catastro.predio 
             SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula,
-                sector = COALESCE(:sector, sector), parroquia = COALESCE(:parroquia, parroquia)
+                sector = :sector, parroquia = COALESCE(:parroquia, parroquia)
             WHERE id = :id_or_cod
         """)
         params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "sector": sec, "parroquia": parr, "id_or_cod": int(id_o_codigo)}
@@ -2324,7 +2343,7 @@ async def update_predio_carta(
         query = text("""
             UPDATE catastro.predio 
             SET codigo_carta = :codigo, nombre_carta = :nombre, cuadricula_carta = :cuadricula,
-                sector = COALESCE(:sector, sector), parroquia = COALESCE(:parroquia, parroquia)
+                sector = :sector, parroquia = COALESCE(:parroquia, parroquia)
             WHERE cod_catastral = :id_or_cod
         """)
         params = {"codigo": cod_carta or None, "nombre": nom_carta or None, "cuadricula": cuad_carta or None, "sector": sec, "parroquia": parr, "id_or_cod": id_o_codigo}
@@ -2923,3 +2942,63 @@ async def update_predio_linderos(id: int, payload: schemas.PredioLinderosUpdate,
         })
     db.commit()
     return {"status": "ok", "message": "Linderos actualizados exitosamente"}
+
+@router.get("/referencias-prediales-sql")
+async def get_referencias_prediales_sql(
+    force_refresh: bool = False,
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Obtiene los Puntos de Referencia Predial (RCX, RCY) directamente desde el
+    esquema 'interoperabilidad.referencias_prediales' de PostgreSQL (sincronizado con SQL Server).
+    """
+    from app.services.sqlserver_service import get_referencias_prediales
+    try:
+        return get_referencias_prediales(force_sync=force_refresh)
+    except Exception as e:
+        logging.error(f"Error consultando referencias prediales: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudieron obtener las referencias prediales: {str(e)}"
+        )
+
+@router.post("/match-referencia-espacial")
+async def match_referencia_espacial(
+    payload: Dict[str, Any],
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Dado un polígono dibujado por el usuario (en GeoJSON o texto de coordenadas),
+    busca en PostgreSQL mediante PostGIS (ST_Contains) si dicho polígono
+    encierra algún Punto de Referencia de SQL Server para autocompletar código y propietario.
+    """
+    from app.services.sqlserver_service import find_referencia_en_poligono
+    geom = payload.get("geom_geojson") or payload.get("geometry")
+    geom_text = payload.get("geom_text")
+
+    # Si llega como texto plano de coordenadas "X Y\nX Y\n..."
+    if not geom and geom_text and isinstance(geom_text, str):
+        pts = []
+        for line in geom_text.strip().splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                try:
+                    pts.append([float(parts[0]), float(parts[1])])
+                except ValueError:
+                    pass
+        if len(pts) >= 3:
+            if pts[0] != pts[-1]:
+                pts.append(pts[0])
+            geom = {"type": "Polygon", "coordinates": [pts]}
+
+    if not geom or not isinstance(geom, dict):
+        # Si el payload es directamente el GeoJSON
+        if isinstance(payload, dict) and payload.get("type") in ["Polygon", "MultiPolygon"]:
+            geom = payload
+        else:
+            return {"encontrado": False, "referencia": None}
+
+    srid = 32717 if payload.get("es_utm", True) else 4326
+    match = find_referencia_en_poligono(geom, srid=srid)
+    return {"encontrado": bool(match), "referencia": match}
+
