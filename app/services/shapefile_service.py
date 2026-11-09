@@ -1754,7 +1754,14 @@ def confirmar_importacion_shapefile(
                 continue
             fila = staging_dict[sid_str]
 
-            val_cod = limpiar_codigo_catastral(fila.get("val_codigo", "")) or f"TEMP-{uuid.uuid4().hex[:8]}"
+            raw_cod = limpiar_codigo_catastral(fila.get("val_codigo", ""))
+            if not raw_cod or raw_cod == "S/C":
+                dpa_prefix = "120650"
+                if default_cant == 127: # Cantón Urdaneta
+                    dpa_prefix = "120650"
+                val_cod = f"{dpa_prefix}-TEMP-{uuid.uuid4().hex[:8]}"
+            else:
+                val_cod = raw_cod
 
             # Diferenciación automática si el código ya existe en el sistema o en este lote
             if val_cod in used_codigos:
