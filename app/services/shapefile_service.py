@@ -66,7 +66,7 @@ def limpiar_codigo_catastral(val) -> str:
     else:
         val_str = str(val).strip()
 
-    if not val_str:
+    if not val_str or '*' in val_str or val_str.lower() in ['nan', 'none', 'null', 's/c', 's/d', 's/n']:
         return ""
 
     if 'e+' in val_str.lower():
@@ -1261,7 +1261,7 @@ def analizar_shapefile(
             q_cols.append(f'NULLIF(TRIM(COALESCE(CAST(t."{col_nombre}" AS VARCHAR), \'\') || \' \' || COALESCE(CAST(t."{col_apellidos}" AS VARCHAR), \'\')), \'\') as incoming_propietario')
         elif col_nombre: q_cols.append(f'CAST(t."{col_nombre}" AS VARCHAR) as incoming_propietario')
         else: q_cols.append("NULL as incoming_propietario")
-        if col_cedula: q_cols.append(f'CAST(t."{col_cedula}" AS VARCHAR) as incoming_cedula')
+        if col_cedula: q_cols.append(f"""CASE WHEN CAST(t."{col_cedula}" AS VARCHAR) LIKE '%%*%%' OR LOWER(CAST(t."{col_cedula}" AS VARCHAR)) IN ('nan', 'null', 'none') THEN NULL ELSE CAST(t."{col_cedula}" AS VARCHAR) END as incoming_cedula""")
         else: q_cols.append("NULL as incoming_cedula")
         if col_fecha_adju: q_cols.append(f'CAST(t."{col_fecha_adju}" AS VARCHAR) as incoming_fecha_adju')
         else: q_cols.append("NULL as incoming_fecha_adju")
@@ -1582,6 +1582,8 @@ def confirmar_importacion_shapefile(
                 val_cod = limpiar_codigo_catastral(raw_incoming_cod)
                 val_nom = str(overrides.get("propietario") if "propietario" in overrides else (fila.get("val_nombre", "") or "")).strip()
                 val_ced = str(overrides.get("cedula") if "cedula" in overrides else (fila.get("val_cedula", "") or "")).strip()
+                if '*' in val_ced or val_ced.lower() in ['nan', 'none', 'null']:
+                    val_ced = ""
                 val_fa = str(overrides.get("fecha_adjudicacion") if "fecha_adjudicacion" in overrides else (fila.get("val_fecha_adju", "") or "")).strip() or None
                 val_tr = str(overrides.get("numero_tramite") if "numero_tramite" in overrides else (fila.get("val_tramite", "") or "")).strip() or None
                 val_inst = str(overrides.get("institucion") if "institucion" in overrides else (fila.get("val_institucion", "") or "")).strip() or None
@@ -1778,6 +1780,8 @@ def confirmar_importacion_shapefile(
                 with db.begin_nested():
                     val_nom = str(fila.get("val_nombre", "") or "").strip()
                     val_ced = str(fila.get("val_cedula", "") or "").strip()
+                    if '*' in val_ced or val_ced.lower() in ['nan', 'none', 'null']:
+                        val_ced = ""
                     val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
                     val_tr = str(fila.get("val_tramite", "") or "").strip() or None
                     val_inst = str(fila.get("val_institucion", "") or "").strip() or None
