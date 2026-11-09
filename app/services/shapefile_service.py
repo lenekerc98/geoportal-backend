@@ -217,6 +217,24 @@ def reconstruir_topologia_predio(
         if rumbos and idx < len(rumbos) and rumbos[idx]:
             val_rumbo = str(rumbos[idx]).strip()
 
+        # Detección espacial automática de colindante si no viene especificado manualmente
+        if not val_col:
+            try:
+                vecino_row = db.execute(text("""
+                    SELECT COALESCE(NULLIF(pos.nombre, ''), p.cod_catastral) as vecino_nombre
+                    FROM catastro.predio p
+                    LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
+                    WHERE p.id != :pid
+                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+                      AND ST_DWithin(p.geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.5)
+                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.3), p.geom)) DESC
+                    LIMIT 1
+                """), {"pid": predio_id, "x1": l["x1"], "y1": l["y1"], "x2": l["x2"], "y2": l["y2"]}).mappings().first()
+                if vecino_row and vecino_row["vecino_nombre"]:
+                    val_col = str(vecino_row["vecino_nombre"]).strip()
+            except Exception as e_vec:
+                logging.debug(f"Aviso en detección de colindante espacial: {e_vec}")
+
         l_params.append({
             "pid": predio_id,
             "cod": cod_catastral,
@@ -320,7 +338,8 @@ def procesar_shapefile(
     fecha_creacion: str = None,
     proyecto_id: int = None,
     task_id: Optional[str] = None,
-    limite_assignments: Optional[Dict[str, str]] = None
+    limite_assignments: Optional[Dict[str, str]] = None,
+    sector_default: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Procesa un shapefile (.zip), lo importa a una tabla temporal en PostGIS y luego
@@ -884,6 +903,7 @@ def procesar_shapefile(
         query_leer += f" FROM {tabla_completa}"
         
         filas = db.execute(text(query_leer)).mappings().all()
+        imported_pids = []
         total_items = len(filas)
         
         for fila in filas:
@@ -923,7 +943,8 @@ def procesar_shapefile(
                     val_fa = str(fila.get('val_fecha_adju', '') or '').strip() or None
                     val_tr = str(fila.get('val_tramite', '') or '').strip() or None
                     val_inst = str(fila.get('val_institucion', '') or '').strip() or None
-                    val_sec = str(fila.get('val_sector', '') or '').strip() or None
+                    clean_default_sec = str(sector_default).strip().upper() if sector_default else None
+                    val_sec = str(fila.get('val_sector', '') or '').strip().upper() or clean_default_sec or None
 
                     row_id_prov, row_id_cant = resolver_dpa_predio(codigo_asignar, default_prov, default_cant, db)
                     q_predio = text(f"""
@@ -966,6 +987,7 @@ def procesar_shapefile(
                     
                     if res_predio:
                         predio_id = res_predio["id"]
+                        imported_pids.append(predio_id)
                         resultados["predios_creados"] += 1
                         
                         # 6.3 y 6.4 Topología ordenada (P01 al norte, horario, rumbos)
@@ -975,6 +997,14 @@ def procesar_shapefile(
             except Exception as row_err:
                 logging.error(f"Error procesando fila {fila['id']} del shapefile: {row_err}")
                 continue
+
+        # Segunda pasada: asegurar detección mutua de colindantes entre todos los predios del lote
+        if len(imported_pids) > 1:
+            for pid in imported_pids:
+                try:
+                    reconstruir_topologia_predio(db, pid)
+                except Exception:
+                    pass
                 
         # Eliminar tabla temporal al finalizar Catastro Base
         db.execute(text(f"DROP TABLE {tabla_completa} CASCADE"))
@@ -1342,7 +1372,8 @@ def confirmar_importacion_shapefile(
     user_id: int = None,
     fecha_creacion: str = None,
     task_id: str = None,
-    proyecto_id: int = None
+    proyecto_id: int = None,
+    sector_default: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Aplica las decisiones del usuario:
@@ -1419,6 +1450,7 @@ def confirmar_importacion_shapefile(
             "lineas_creadas": 0,
             "advertencias": []
         }
+        imported_pids = []
 
         # Obtener códigos catastrales activos existentes en el sistema para evitar violaciones de clave única
         active_codigos_rows = db.execute(text("SELECT cod_catastral FROM catastro.predio WHERE fecha_baja IS NULL")).fetchall()
@@ -1459,7 +1491,8 @@ def confirmar_importacion_shapefile(
                 val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
                 val_tr = str(fila.get("val_tramite", "") or "").strip() or None
                 val_inst = str(fila.get("val_institucion", "") or "").strip() or None
-                val_sec = str(fila.get("val_sector", "") or "").strip() or None
+                clean_default_sec = str(sector_default).strip().upper() if sector_default else None
+                val_sec = str(fila.get("val_sector", "") or "").strip().upper() or clean_default_sec or None
 
                 # Encontrar el predio existente que colisiona con esta fila de staging
                 q_find = text(f"""
@@ -1553,6 +1586,7 @@ def confirmar_importacion_shapefile(
                     resultados["vertices_creados"] += top_res["vertices_creados"]
                     resultados["lineas_creadas"] += top_res["lineas_creadas"]
                     resultados["predios_reemplazados"] += 1
+                    imported_pids.append(target_id)
                     if final_cod:
                         used_codigos.add(final_cod)
 
@@ -1591,7 +1625,8 @@ def confirmar_importacion_shapefile(
                     val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
                     val_tr = str(fila.get("val_tramite", "") or "").strip() or None
                     val_inst = str(fila.get("val_institucion", "") or "").strip() or None
-                    val_sec = str(fila.get("val_sector", "") or "").strip() or None
+                    clean_default_sec = str(sector_default).strip().upper() if sector_default else None
+                    val_sec = str(fila.get("val_sector", "") or "").strip().upper() or clean_default_sec or None
 
                     posesionario_id = None
                     if val_ced:
@@ -1653,6 +1688,7 @@ def confirmar_importacion_shapefile(
 
                     if new_predio:
                         new_id = new_predio["id"]
+                        imported_pids.append(new_id)
                         resultados["predios_creados"] += 1
 
                         # Topología ordenada (P01 al norte, horario, rumbos)
@@ -1662,6 +1698,14 @@ def confirmar_importacion_shapefile(
             except Exception as row_err:
                 logging.error(f"Error importando fila {sid_str} con código {val_cod}: {row_err}")
                 continue
+
+        # Segunda pasada: asegurar detección mutua de colindantes entre todos los predios del lote
+        if len(imported_pids) > 1:
+            for pid in imported_pids:
+                try:
+                    reconstruir_topologia_predio(db, pid)
+                except Exception:
+                    pass
 
         # Limpiar tabla staging
         db.execute(text(f"DROP TABLE IF EXISTS {staging_table} CASCADE"))

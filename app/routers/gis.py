@@ -744,6 +744,22 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
     if predio.empresa_id is not None:
         updates.append("empresa_id = :empresa_id")
         params["empresa_id"] = predio.empresa_id
+
+    if predio.proyecto_id is not None:
+        updates.append("proyecto_id = :proyecto_id")
+        params["proyecto_id"] = predio.proyecto_id
+
+    if predio.fecha_adjudicacion is not None:
+        updates.append("fecha_adjudicacion = :fecha_adjudicacion")
+        params["fecha_adjudicacion"] = predio.fecha_adjudicacion
+
+    if predio.numero_tramite is not None:
+        updates.append("numero_tramite = :numero_tramite")
+        params["numero_tramite"] = predio.numero_tramite
+
+    if predio.institucion is not None:
+        updates.append("institucion = :institucion")
+        params["institucion"] = predio.institucion
         
     if predio.estado is not None:
         updates.append("estado = :estado")
@@ -769,25 +785,16 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             
         updates.append(f"geom = {geom_sql}")
         updates.append(f"area_ha = ST_Area({geom_sql}) / 10000.0")
-        
-        cod_prov = predio.cod_catastral[0:2] if predio.cod_catastral else None
-        cod_cant = predio.cod_catastral[0:4] if predio.cod_catastral else None
-        cod_parr = predio.cod_catastral[0:6] if predio.cod_catastral else None
 
-        query_dpa = text("""
-            SELECT 
-              (SELECT id FROM catastro.provincias WHERE codigo_dpa = :cod_prov LIMIT 1) as id_provincia,
-              (SELECT id FROM catastro.cantones WHERE codigo_dpa = :cod_cant LIMIT 1) as id_canton,
-              (SELECT id FROM catastro.ciudades WHERE codigo_dpa = :cod_parr LIMIT 1) as id_ciudad
-        """)
-        dpa_res = db.execute(query_dpa, {"cod_prov": cod_prov, "cod_cant": cod_cant, "cod_parr": cod_parr}).fetchone()
-        if dpa_res:
-            updates.append("id_provincia = :id_provincia")
-            updates.append("id_canton = :id_canton")
-            updates.append("id_ciudad = :id_ciudad")
-            params["id_provincia"] = getattr(dpa_res, "id_provincia", None)
-            params["id_canton"] = getattr(dpa_res, "id_canton", None)
-            params["id_ciudad"] = getattr(dpa_res, "id_ciudad", None)
+    # Deduplicar columnas para prevenir SyntaxError en PostgreSQL (multiple assignments to same column)
+    unique_updates = []
+    seen_cols = set()
+    for u in updates:
+        col = u.split("=")[0].strip()
+        if col not in seen_cols:
+            seen_cols.add(col)
+            unique_updates.append(u)
+    updates = unique_updates
         
     if not updates:
         return {"message": "No hay campos para actualizar"}
@@ -1063,6 +1070,15 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         ORDER BY id
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+    has_any_colindante = any(l["colindante"] and str(l["colindante"]).strip() for l in linderos_rows)
+    if (not linderos_rows or not has_any_colindante) and predio_row["geom"]:
+        try:
+            reconstruir_topologia_predio(db, predio_id)
+            db.commit()
+            vertices_rows = db.execute(q_vertices, {"predio_id": predio_id}).mappings().all()
+            linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+        except Exception:
+            db.rollback()
     vertices_rows, linderos_rows = _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows)
     
     # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
@@ -1172,6 +1188,15 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         ORDER BY id
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+    has_any_colindante = any(l["colindante"] and str(l["colindante"]).strip() for l in linderos_rows)
+    if (not linderos_rows or not has_any_colindante) and predio_row["geom"]:
+        try:
+            reconstruir_topologia_predio(db, predio_id)
+            db.commit()
+            vertices_rows = db.execute(q_vertices, {"predio_id": predio_id}).mappings().all()
+            linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
+        except Exception:
+            db.rollback()
     vertices_rows, linderos_rows = _reordenar_vertices_y_linderos_desde_izquierda(vertices_rows, linderos_rows)
     
     # 4. Autodeteccion espacial de la Carta Topografica si no esta registrada
@@ -1284,13 +1309,14 @@ async def get_codigos_catastrales(
                p.area_ha,
                COALESCE(cc.empresa_id, p.empresa_id) AS empresa_id,
                p.proyecto_id,
-               p.sector
+               p.sector,
+               p.parroquia
         FROM catastro.codigo_catastral cc
         LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
         LEFT JOIN catastro.posesionario pos ON COALESCE(p.posesionario_id, cc.posesionario_id) = pos.id
         LEFT JOIN catastro.empresa e ON COALESCE(cc.empresa_id, p.empresa_id) = e.id
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id OR p.empresa_id = :empresa_id)
-          AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id)
+          AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id OR p.proyecto_id IS NULL)
         {0}
         {1}
         ORDER BY cc.fecha_creacion DESC
@@ -1316,7 +1342,8 @@ async def get_codigos_catastrales(
                 area_ha=float(r["area_ha"]) if r["area_ha"] is not None else None,
                 empresa_id=r["empresa_id"],
                 proyecto_id=r["proyecto_id"],
-                sector=r["sector"]
+                sector=r["sector"],
+                parroquia=r["parroquia"]
             ) for r in rows
         ]
     except Exception as e:
@@ -1531,6 +1558,7 @@ async def import_shapefile(
     import_type: str = Form("catastro_base"),
     nombre_capa: str = Form(None),
     limite_assignments: Optional[str] = Form(None),
+    sector_default: Optional[str] = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
@@ -1571,7 +1599,8 @@ async def import_shapefile(
             temp_zip_path, real_empresa_id, mapeo, renombrar, db, import_type, nombre_capa, 
             user_id=current_user.id_usuario, fecha_creacion=fecha_creacion,
             proyecto_id=proyecto_id,
-            limite_assignments=assign_dict
+            limite_assignments=assign_dict,
+            sector_default=sector_default
         )
         log_audit(db, "INFO", "SHAPEFILE_IMPORTED", f"Shapefile importado en tabla {resultados['tabla_cruda']}", current_user.id_usuario)
         return {"message": "Shapefile importado exitosamente", "data": resultados}
@@ -1620,6 +1649,7 @@ class ConfirmarImportacionRequest(BaseModel):
     fecha_creacion: Optional[str] = None
     proyecto_id: Optional[int] = None
     task_id: Optional[str] = None
+    sector_default: Optional[str] = None
 
 @router.post("/analizar-shapefile")
 async def endpoint_analizar_shapefile(
@@ -1679,7 +1709,8 @@ def endpoint_confirmar_importacion(
             user_id=current_user.id_usuario,
             fecha_creacion=req.fecha_creacion,
             task_id=req.task_id,
-            proyecto_id=req.proyecto_id
+            proyecto_id=req.proyecto_id,
+            sector_default=req.sector_default
         )
         log_audit(db, "INFO", "SHAPEFILE_CONFIRMED", f"Importación confirmada: {res}", current_user.id_usuario)
         msg = "Importación finalizada con éxito"
