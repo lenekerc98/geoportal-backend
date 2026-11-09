@@ -1282,6 +1282,17 @@ async def update_predio_angulo(predio_id: int, angulo_data: schemas.PredioAngulo
     db.commit()
     return {"message": "Ángulo actualizado exitosamente"}
 
+@router.get("/codigos-catastrales/faltantes")
+async def get_codigos_catastrales_faltantes(current_user: Usuario = Depends(get_current_user)):
+    """
+    Retorna la lista de predios que aún no han sido impresos en reportes masivos.
+    """
+    json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "predios_faltantes.json")
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
 @router.get("/codigos-catastrales", response_model=List[schemas.CodigoCatastral])
 async def get_codigos_catastrales(
     fecha_inicio: Optional[str] = None,
