@@ -1450,7 +1450,8 @@ def confirmar_importacion_shapefile(
     fecha_creacion: str = None,
     task_id: str = None,
     proyecto_id: int = None,
-    sector_default: Optional[str] = None
+    sector_default: Optional[str] = None,
+    conflict_overrides: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Aplica las decisiones del usuario:
@@ -1476,7 +1477,7 @@ def confirmar_importacion_shapefile(
         # Sanitizar y validar de inmediato todas las geometrías de staging (corrige auto-intersecciones de anillos OGC)
         try:
             db.execute(text(f"""
-                UPDATE {tabla_completa}
+                UPDATE {staging_table}
                 SET geom = ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3)
                 WHERE geom IS NOT NULL;
             """))
@@ -1575,14 +1576,17 @@ def confirmar_importacion_shapefile(
                 continue
 
             if accion == "reemplazar":
-                val_cod = limpiar_codigo_catastral(fila.get("val_codigo", ""))
-                val_nom = str(fila.get("val_nombre", "") or "").strip()
-                val_ced = str(fila.get("val_cedula", "") or "").strip()
-                val_fa = str(fila.get("val_fecha_adju", "") or "").strip() or None
-                val_tr = str(fila.get("val_tramite", "") or "").strip() or None
-                val_inst = str(fila.get("val_institucion", "") or "").strip() or None
+                overrides = (conflict_overrides or {}).get(str(temp_id_str), {})
+
+                raw_incoming_cod = overrides.get("codigo") if "codigo" in overrides else fila.get("val_codigo", "")
+                val_cod = limpiar_codigo_catastral(raw_incoming_cod)
+                val_nom = str(overrides.get("propietario") if "propietario" in overrides else (fila.get("val_nombre", "") or "")).strip()
+                val_ced = str(overrides.get("cedula") if "cedula" in overrides else (fila.get("val_cedula", "") or "")).strip()
+                val_fa = str(overrides.get("fecha_adjudicacion") if "fecha_adjudicacion" in overrides else (fila.get("val_fecha_adju", "") or "")).strip() or None
+                val_tr = str(overrides.get("numero_tramite") if "numero_tramite" in overrides else (fila.get("val_tramite", "") or "")).strip() or None
+                val_inst = str(overrides.get("institucion") if "institucion" in overrides else (fila.get("val_institucion", "") or "")).strip() or None
                 clean_default_sec = str(sector_default).strip().upper() if sector_default else None
-                val_sec = str(fila.get("val_sector", "") or "").strip().upper() or clean_default_sec or None
+                val_sec = str(overrides.get("sector") if "sector" in overrides else (fila.get("val_sector", "") or "")).strip().upper() or clean_default_sec or None
 
                 # Encontrar el predio existente que colisiona con esta fila de staging
                 q_find = text(f"""
@@ -1618,7 +1622,20 @@ def confirmar_importacion_shapefile(
 
                 if target:
                     target_id = target["id"]
-                    final_cod = val_cod if val_cod else target["cod_catastral"]
+                    final_cod = val_cod if (val_cod and val_cod != 'S/C' and not val_cod.startswith('TEMP-')) else target["cod_catastral"]
+
+                    # Preservar cédula y nombre existente si el nuevo archivo no los trae
+                    existing_pos_row = db.execute(text("""
+                        SELECT p.posesionario_id, pos.cedula, pos.nombre 
+                        FROM catastro.predio p 
+                        LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id 
+                        WHERE p.id = :pid
+                    """), {"pid": target_id}).mappings().first()
+
+                    if not val_ced and existing_pos_row and existing_pos_row["cedula"]:
+                        val_ced = str(existing_pos_row["cedula"]).strip()
+                    if not val_nom and existing_pos_row and existing_pos_row["nombre"]:
+                        val_nom = str(existing_pos_row["nombre"]).strip()
 
                     # Actualizar posesionario si viene nombre o cédula
                     posesionario_id = None

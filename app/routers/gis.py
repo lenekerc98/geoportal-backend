@@ -1645,6 +1645,7 @@ class ConfirmarImportacionRequest(BaseModel):
     empresa_id: int
     mapping: Dict[str, str]
     conflict_actions: Dict[str, str] = {}
+    conflict_overrides: Optional[Dict[str, Dict[str, Any]]] = {}
     selected_new_ids: List[int] = []
     fecha_creacion: Optional[str] = None
     proyecto_id: Optional[int] = None
@@ -1704,6 +1705,7 @@ def endpoint_confirmar_importacion(
             empresa_id=real_empresa_id,
             mapping=req.mapping,
             conflict_actions=req.conflict_actions,
+            conflict_overrides=req.conflict_overrides,
             selected_new_ids=req.selected_new_ids,
             db=db,
             user_id=current_user.id_usuario,
