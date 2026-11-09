@@ -1572,6 +1572,29 @@ def confirmar_importacion_shapefile(
                                 ins_pos = text("INSERT INTO catastro.posesionario (nombre, empresa_id) VALUES (:nom, :emp_id) RETURNING id")
                                 posesionario_id = db.execute(ins_pos, {"nom": val_nom, "emp_id": empresa_id}).scalar()
 
+                    # Validar empresa_id
+                    clean_emp_id = empresa_id
+                    if clean_emp_id:
+                        chk_emp = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": clean_emp_id}).fetchone()
+                        if not chk_emp:
+                            clean_emp_id = None
+
+                    # Evitar colisión de clave única con otro predio activo diferente al objetivo
+                    if final_cod:
+                        other_predio = db.execute(text("SELECT id FROM catastro.predio WHERE cod_catastral = :cod AND id != :tid AND fecha_baja IS NULL LIMIT 1"), {"cod": final_cod, "tid": target_id}).fetchone()
+                        if other_predio:
+                            final_cod = f"{final_cod}-DUP{target_id}"
+
+                    # Asegurar que el código exista en catastro.codigo_catastral (para cumplir con la FK predio_cod_catastral_fkey)
+                    if final_cod:
+                        db.execute(text("""
+                            INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
+                            VALUES (:codigo, :pos_id, :emp_id, true)
+                            ON CONFLICT (codigo) DO UPDATE SET 
+                                posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id),
+                                activo = true
+                        """), {"codigo": final_cod, "pos_id": posesionario_id, "emp_id": clean_emp_id})
+
                     row_id_prov, row_id_cant = resolver_dpa_predio(final_cod, default_prov, default_cant, db)
                     # Actualizar predio existente
                     q_upd = text(f"""
@@ -1679,12 +1702,21 @@ def confirmar_importacion_shapefile(
                             ins_pos = text("INSERT INTO catastro.posesionario (nombre, empresa_id) VALUES (:nom, :emp_id) RETURNING id")
                             posesionario_id = db.execute(ins_pos, {"nom": val_nom, "emp_id": empresa_id}).scalar()
 
+                    # Validar empresa_id
+                    clean_emp_id = empresa_id
+                    if clean_emp_id:
+                        chk_emp = db.execute(text("SELECT id FROM catastro.empresa WHERE id = :id"), {"id": clean_emp_id}).fetchone()
+                        if not chk_emp:
+                            clean_emp_id = None
+
                     # Código catastral
                     db.execute(text("""
-                        INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id)
-                        VALUES (:codigo, :pos_id, :emp_id)
-                        ON CONFLICT (codigo) DO UPDATE SET posesionario_id = EXCLUDED.posesionario_id
-                    """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": empresa_id})
+                        INSERT INTO catastro.codigo_catastral (codigo, posesionario_id, empresa_id, activo)
+                        VALUES (:codigo, :pos_id, :emp_id, true)
+                        ON CONFLICT (codigo) DO UPDATE SET 
+                            posesionario_id = COALESCE(EXCLUDED.posesionario_id, catastro.codigo_catastral.posesionario_id),
+                            activo = true
+                    """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": clean_emp_id})
 
                     row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
                     # Predio
@@ -1706,7 +1738,7 @@ def confirmar_importacion_shapefile(
                     new_predio = db.execute(q_ins, {
                         "codigo": val_cod,
                         "pos_id": posesionario_id,
-                        "emp_id": empresa_id,
+                        "emp_id": clean_emp_id,
                         "id_row": int(sid_str),
                         "creado_por": user_id,
                         "fecha_creacion": fecha_creacion,
