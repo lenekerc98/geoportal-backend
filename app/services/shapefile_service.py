@@ -248,13 +248,20 @@ def reconstruir_topologia_predio(
         if not val_col:
             try:
                 vecino_row = db.execute(text("""
-                    SELECT COALESCE(NULLIF(pos.nombre, ''), p.cod_catastral) as vecino_nombre
+                    SELECT 
+                        CASE 
+                            WHEN pos.nombre IS NOT NULL AND TRIM(pos.nombre) NOT IN ('', 'S/D', 'SIN NOMBRE') 
+                            THEN TRIM(pos.nombre)
+                            WHEN p.cod_catastral IS NOT NULL AND NOT (p.cod_catastral LIKE '%TEMP-%' OR p.cod_catastral = 'S/C')
+                            THEN 'PREDIO ' || TRIM(p.cod_catastral)
+                            ELSE 'PROP. PRIVADA'
+                        END as vecino_nombre
                     FROM catastro.predio p
                     LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
                     WHERE p.id != :pid
                       AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
-                      AND ST_DWithin(p.geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.5)
-                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.3), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
+                      AND ST_DWithin(p.geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 1.2)
+                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.5), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
                     LIMIT 1
                 """), {"pid": predio_id, "x1": l["x1"], "y1": l["y1"], "x2": l["x2"], "y2": l["y2"]}).mappings().first()
                 if vecino_row and vecino_row["vecino_nombre"]:
