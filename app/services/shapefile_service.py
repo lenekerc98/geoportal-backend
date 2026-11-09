@@ -254,7 +254,7 @@ def reconstruir_topologia_predio(
                     WHERE p.id != :pid
                       AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
                       AND ST_DWithin(p.geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.5)
-                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.3), p.geom)) DESC
+                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.3), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
                     LIMIT 1
                 """), {"pid": predio_id, "x1": l["x1"], "y1": l["y1"], "x2": l["x2"], "y2": l["y2"]}).mappings().first()
                 if vecino_row and vecino_row["vecino_nombre"]:
@@ -523,6 +523,18 @@ def procesar_shapefile(
         col_rows = db.execute(col_query, {"schema": schema_raw, "table": tabla_raw}).fetchall()
         existing_cols = [r[0] for r in col_rows]
         col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
+
+        # Sanitizar y validar de inmediato todas las geometrías de staging (corrige auto-intersecciones de anillos OGC)
+        try:
+            db.execute(text(f"""
+                UPDATE {tabla_completa}
+                SET geom = ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3)
+                WHERE geom IS NOT NULL;
+            """))
+            db.commit()
+        except Exception as e_mv:
+            db.rollback()
+            logging.warning(f"Aviso sanitizando staging geom con ST_MakeValid: {e_mv}")
 
         def normalize_col_key(s: str) -> str:
             if not s:
@@ -980,11 +992,11 @@ def procesar_shapefile(
                         SELECT 
                             :codigo, :pos_id, :emp_id, 
                             CASE 
-                                WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' 
-                                THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
-                                ELSE ST_Force2D(ST_SetSRID(geom, 32717))
+                                WHEN ST_GeometryType(cg) = 'ST_MultiPolygon' 
+                                THEN ST_GeometryN(cg, 1)
+                                ELSE cg
                             END,
-                            ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
+                            ST_Area(cg) / 10000.0,
                             :creado_por,
                             :fecha_creacion,
                             :fecha_adjudicacion,
@@ -994,7 +1006,10 @@ def procesar_shapefile(
                             :id_prov,
                             :id_cant,
                             :sector
-                        FROM {tabla_completa} WHERE {col_fid} = :id_row
+                        FROM (
+                            SELECT ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3) as cg
+                            FROM {tabla_completa} WHERE {col_fid} = :id_row
+                        ) sub
                         RETURNING id
                     """)
                     res_predio = db.execute(q_predio, {
@@ -1174,6 +1189,18 @@ def analizar_shapefile(
         existing_cols = [r[0] for r in col_rows]
         col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
 
+        # Sanitizar y validar de inmediato todas las geometrías de staging (corrige auto-intersecciones de anillos OGC)
+        try:
+            db.execute(text(f"""
+                UPDATE {tabla_completa}
+                SET geom = ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3)
+                WHERE geom IS NOT NULL;
+            """))
+            db.commit()
+        except Exception as e_mv:
+            db.rollback()
+            logging.warning(f"Aviso sanitizando staging geom con ST_MakeValid: {e_mv}")
+
         def normalize_col_key(s: str) -> str:
             if not s: return ""
             n = ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn')
@@ -1252,8 +1279,34 @@ def analizar_shapefile(
         expr_clean_codigo = f'CASE WHEN CAST(t."{col_codigo}" AS VARCHAR) ILIKE \'%e+%\' THEN CAST(CAST(t."{col_codigo}" AS NUMERIC(30,0)) AS VARCHAR) ELSE CAST(t."{col_codigo}" AS VARCHAR) END' if col_codigo else None
 
         q_conflictos = text(f"""
+            WITH clean_staging AS (
+                SELECT 
+                    t.{col_fid} as fid,
+                    ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(t.geom, 32717))), 3) as geom,
+                    {expr_clean_codigo if expr_clean_codigo else 'NULL'} as clean_codigo
+                FROM {tabla_completa} t
+                WHERE t.geom IS NOT NULL
+            ),
+            clean_predios AS (
+                SELECT 
+                    p.id,
+                    p.empresa_id,
+                    p.fecha_baja,
+                    p.cod_catastral,
+                    p.posesionario_id,
+                    p.area_ha,
+                    p.fecha_adjudicacion,
+                    p.numero_tramite,
+                    p.institucion,
+                    p.sector,
+                    ST_CollectionExtract(ST_MakeValid(p.geom), 3) as geom
+                FROM catastro.predio p
+                WHERE (:empresa_id IS NULL OR p.empresa_id = :empresa_id)
+                  AND p.fecha_baja IS NULL
+                  AND p.geom IS NOT NULL
+            )
             SELECT 
-                t.{col_fid} as temp_id,
+                t.fid as temp_id,
                 p.id as existing_id,
                 p.cod_catastral as existing_codigo,
                 pos.nombre as existing_propietario,
@@ -1263,35 +1316,27 @@ def analizar_shapefile(
                 p.numero_tramite as existing_tramite,
                 p.institucion as existing_institucion,
                 p.sector as existing_sector,
-                ST_Equals(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom) as exact_geom,
+                ST_Equals(t.geom, p.geom) as exact_geom,
                 ROUND((
-                    ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)) / 
-                    NULLIF(GREATEST(ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))), ST_Area(p.geom)), 0) * 100
+                    ST_Area(ST_Intersection(t.geom, p.geom)) / 
+                    NULLIF(GREATEST(ST_Area(t.geom), ST_Area(p.geom)), 0) * 100
                 )::numeric, 1) as overlap_pct
-            FROM {tabla_completa} t
-            JOIN catastro.predio p ON (
-                (:empresa_id IS NULL OR p.empresa_id = :empresa_id)
-                AND (p.fecha_baja IS NULL)
-                AND (
-                    ST_Equals(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)
-                    OR ST_Intersects(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)
-                    OR (
-                        {f'TRIM({expr_clean_codigo}) = p.cod_catastral' if expr_clean_codigo else 'FALSE'}
-                    )
-                )
+            FROM clean_staging t
+            JOIN clean_predios p ON (
+                ST_Equals(t.geom, p.geom)
+                OR ST_Intersects(t.geom, p.geom)
+                OR ({f'TRIM(t.clean_codigo) = p.cod_catastral' if expr_clean_codigo else 'FALSE'})
             )
             LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
             WHERE (
-                ST_Equals(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)
+                ST_Equals(t.geom, p.geom)
                 OR (
-                    ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID(t.geom, 32717)), p.geom)) / 
-                    NULLIF(LEAST(ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))), ST_Area(p.geom)), 0) > 0.4
+                    ST_Area(ST_Intersection(t.geom, p.geom)) / 
+                    NULLIF(LEAST(ST_Area(t.geom), ST_Area(p.geom)), 0) > 0.4
                 )
-                OR (
-                    {f'TRIM({expr_clean_codigo}) = p.cod_catastral' if expr_clean_codigo else 'FALSE'}
-                )
+                OR ({f'TRIM(t.clean_codigo) = p.cod_catastral' if expr_clean_codigo else 'FALSE'})
             )
-            ORDER BY t.{col_fid} ASC
+            ORDER BY t.fid ASC
         """)
 
         conflicts_rows = db.execute(q_conflictos, {"empresa_id": empresa_id}).mappings().all()
@@ -1428,6 +1473,18 @@ def confirmar_importacion_shapefile(
         existing_cols = [r[0] for r in col_rows]
         col_fid = "ogc_fid" if "ogc_fid" in existing_cols else "id"
 
+        # Sanitizar y validar de inmediato todas las geometrías de staging (corrige auto-intersecciones de anillos OGC)
+        try:
+            db.execute(text(f"""
+                UPDATE {tabla_completa}
+                SET geom = ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3)
+                WHERE geom IS NOT NULL;
+            """))
+            db.commit()
+        except Exception as e_mv:
+            db.rollback()
+            logging.warning(f"Aviso sanitizando staging geom con ST_MakeValid: {e_mv}")
+
         def normalize_col_key(s: str) -> str:
             if not s: return ""
             n = ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn')
@@ -1529,19 +1586,32 @@ def confirmar_importacion_shapefile(
 
                 # Encontrar el predio existente que colisiona con esta fila de staging
                 q_find = text(f"""
+                    WITH clean_incoming AS (
+                        SELECT ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3) as geom
+                        FROM {staging_table}
+                        WHERE {col_fid} = :tid
+                    ),
+                    clean_predios AS (
+                        SELECT 
+                            p.id, 
+                            p.cod_catastral,
+                            ST_CollectionExtract(ST_MakeValid(p.geom), 3) as geom
+                        FROM catastro.predio p
+                        WHERE (:empresa_id IS NULL OR p.empresa_id = :empresa_id)
+                          AND p.fecha_baja IS NULL
+                          AND p.geom IS NOT NULL
+                    )
                     SELECT p.id, p.cod_catastral
-                    FROM catastro.predio p
-                    WHERE (:empresa_id IS NULL OR p.empresa_id = :empresa_id)
-                      AND p.fecha_baja IS NULL
-                      AND (
-                          ST_Equals(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)
-                          OR (
-                              ST_Intersects(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)
-                              AND ST_Area(ST_Intersection(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717)), p.geom)) / 
-                                  NULLIF(LEAST(ST_Area(ST_Force2D(ST_SetSRID((SELECT geom FROM {staging_table} WHERE {col_fid} = :tid), 32717))), ST_Area(p.geom)), 0) > 0.4
-                          )
-                          OR (:cod IS NOT NULL AND :cod != '' AND p.cod_catastral = :cod)
-                      )
+                    FROM clean_predios p, clean_incoming inc
+                    WHERE (
+                        ST_Equals(inc.geom, p.geom)
+                        OR (
+                            ST_Intersects(inc.geom, p.geom)
+                            AND ST_Area(ST_Intersection(inc.geom, p.geom)) / 
+                                NULLIF(LEAST(ST_Area(inc.geom), ST_Area(p.geom)), 0) > 0.4
+                        )
+                        OR (:cod IS NOT NULL AND :cod != '' AND p.cod_catastral = :cod)
+                    )
                     LIMIT 1
                 """)
                 target = db.execute(q_find, {"empresa_id": empresa_id, "tid": int(temp_id_str), "cod": val_cod}).mappings().first()
@@ -1602,13 +1672,19 @@ def confirmar_importacion_shapefile(
                         SET 
                             geom = (
                                 SELECT CASE 
-                                    WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' 
-                                    THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
-                                    ELSE ST_Force2D(ST_SetSRID(geom, 32717))
+                                    WHEN ST_GeometryType(cg) = 'ST_MultiPolygon' 
+                                    THEN ST_GeometryN(cg, 1)
+                                    ELSE cg
                                 END
+                                FROM (
+                                    SELECT ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3) as cg
+                                    FROM {staging_table} WHERE {col_fid} = :tid
+                                ) sub
+                            ),
+                            area_ha = (
+                                SELECT ST_Area(ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3)) / 10000.0 
                                 FROM {staging_table} WHERE {col_fid} = :tid
                             ),
-                            area_ha = (SELECT ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 FROM {staging_table} WHERE {col_fid} = :tid),
                             cod_catastral = COALESCE(:cod, cod_catastral),
                             posesionario_id = COALESCE(:pos_id, posesionario_id),
                             fecha_adjudicacion = COALESCE(:fa, fecha_adjudicacion),
@@ -1725,14 +1801,17 @@ def confirmar_importacion_shapefile(
                         SELECT 
                             :codigo, :pos_id, :emp_id,
                             CASE 
-                                WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' 
-                                THEN ST_GeometryN(ST_Force2D(ST_SetSRID(geom, 32717)), 1)
-                                ELSE ST_Force2D(ST_SetSRID(geom, 32717))
+                                WHEN ST_GeometryType(cg) = 'ST_MultiPolygon' 
+                                THEN ST_GeometryN(cg, 1)
+                                ELSE cg
                             END,
-                            ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0,
+                            ST_Area(cg) / 10000.0,
                             :creado_por, :fecha_creacion, :fa, :tr, :inst,
                             :proy_id, :id_prov, :id_cant, :sec
-                        FROM {staging_table} WHERE {col_fid} = :id_row
+                        FROM (
+                            SELECT ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3) as cg
+                            FROM {staging_table} WHERE {col_fid} = :id_row
+                        ) sub
                         RETURNING id
                     """)
                     new_predio = db.execute(q_ins, {
