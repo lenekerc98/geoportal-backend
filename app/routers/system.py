@@ -349,7 +349,10 @@ def clone_database(
                     p.codigo_carta,
                     p.nombre_carta,
                     p.cuadricula_carta,
-                    p.codigo_anterior
+                    p.codigo_anterior,
+                    p.nombre_predio,
+                    p.texto_interno,
+                    p.textos_internos_json
                 FROM catastro.predio p
                 LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
             """))

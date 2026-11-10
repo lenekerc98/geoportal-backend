@@ -7,6 +7,7 @@ import subprocess
 import re
 import unicodedata
 import datetime
+import json
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
@@ -179,7 +180,8 @@ def reconstruir_topologia_predio(
     db: Session, 
     predio_id: int, 
     colindantes: Optional[List[str]] = None, 
-    rumbos: Optional[List[str]] = None
+    rumbos: Optional[List[str]] = None,
+    linderos_meta: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, int]:
     """
     Regenera los vértices y linderos del predio indicado:
@@ -233,6 +235,13 @@ def reconstruir_topologia_predio(
         VALUES (:pid, :cod, :longitud, :rumbo, :tramo, :colindante, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), :emp_id)
     """)
     l_params = []
+    meta_by_tramo = {}
+    if linderos_meta:
+        for m in linderos_meta:
+            tr_k = str(m.get("tramo") or "").strip()
+            if tr_k:
+                meta_by_tramo[tr_k] = m
+
     for idx, l in enumerate(linderos_list):
         val_col = ""
         if colindantes and idx < len(colindantes) and colindantes[idx]:
@@ -240,6 +249,10 @@ def reconstruir_topologia_predio(
             # Limpiar prefijo cardinal y medidas entre parentesis
             raw_c = re.sub(r'^(norte|sur|este|oeste)\s*:\s*', '', raw_c, flags=re.IGNORECASE)
             val_col = re.sub(r'\s*\([\d\.]+\s*m\)', '', raw_c).strip()
+        elif linderos_meta:
+            m_item = meta_by_tramo.get(l["tramo"]) or (linderos_meta[idx] if idx < len(linderos_meta) else None)
+            if m_item and m_item.get("colindante"):
+                val_col = str(m_item.get("colindante")).strip()
         val_rumbo = l["rumbo"]
         if rumbos and idx < len(rumbos) and rumbos[idx]:
             val_rumbo = str(rumbos[idx]).strip()
@@ -289,6 +302,65 @@ def reconstruir_topologia_predio(
         "vertices_creados": len(vertices_list),
         "lineas_creadas": len(linderos_list)
     }
+
+
+def _completar_colindantes_vacios(db: Session, predio_ids: List[int]):
+    """Completa únicamente colindantes vacíos entre predios vecinos sin sobrescribir los ya asignados."""
+    if not predio_ids:
+        return
+    try:
+        rows = db.execute(text("""
+            SELECT id, predio_id, ST_AsText(geom) as gwkt
+            FROM catastro.linea_lindero
+            WHERE predio_id = ANY(:pids)
+              AND (colindante IS NULL OR TRIM(colindante) = '')
+              AND geom IS NOT NULL
+        """), {"pids": predio_ids}).mappings().all()
+
+        for row in rows:
+            try:
+                vecino_row = db.execute(text("""
+                    SELECT 
+                        CASE 
+                            WHEN pos.nombre IS NOT NULL AND TRIM(pos.nombre) NOT IN ('', 'S/D', 'SIN NOMBRE') 
+                            THEN TRIM(pos.nombre)
+                            WHEN p.nombre_predio IS NOT NULL AND TRIM(p.nombre_predio) != ''
+                            THEN TRIM(p.nombre_predio)
+                            WHEN p.cod_catastral IS NOT NULL AND NOT (p.cod_catastral LIKE '%TEMP-%' OR p.cod_catastral = 'S/C')
+                            THEN 'PREDIO ' || TRIM(p.cod_catastral)
+                            ELSE 'PROP. PRIVADA'
+                        END as vecino_nombre
+                    FROM catastro.predio p
+                    LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
+                    WHERE p.id != :pid
+                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+                      AND ST_DWithin(p.geom, ST_GeomFromText(:gwkt, 32717), 1.2)
+                    ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_GeomFromText(:gwkt, 32717), 0.5), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
+                    LIMIT 1
+                """), {"pid": row["predio_id"], "gwkt": row["gwkt"]}).mappings().first()
+                if vecino_row and vecino_row["vecino_nombre"]:
+                    db.execute(text("UPDATE catastro.linea_lindero SET colindante = :col WHERE id = :lid"), {
+                        "col": str(vecino_row["vecino_nombre"]).strip(),
+                        "lid": row["id"]
+                    })
+            except Exception:
+                pass
+    except Exception as e:
+        logging.debug(f"Aviso en _completar_colindantes_vacios: {e}")
+
+
+def _resolve_ogr2ogr_exe() -> str:
+    found = shutil.which("ogr2ogr")
+    if found:
+        return found
+    for candidate in (
+        r"C:\Program Files\QGIS 4.0.2\bin\ogr2ogr.exe",
+        r"C:\Program Files\QGIS 3.36.0\bin\ogr2ogr.exe",
+        r"C:\Program Files\QGIS 3.34.0\bin\ogr2ogr.exe",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return "ogr2ogr"
 
 def resolver_contexto_empresa_proyecto(db: Session, empresa_id: Optional[int], proyecto_id: Optional[int] = None):
     """
@@ -490,7 +562,7 @@ def procesar_shapefile(
         encoding_flags = ["-oo", f"ENCODING={detected_encoding}"]
 
         cmd = [
-            "ogr2ogr",
+            _resolve_ogr2ogr_exe(),
             "-f", "PostgreSQL",
             f"PG:{db_url}",
             shp_file,
@@ -1130,6 +1202,18 @@ def analizar_shapefile(
         schema_raw = "catastro"
         tabla_completa = f"{schema_raw}.{tabla_staging}"
 
+        for root, dirs, files in os.walk(temp_dir):
+            found_meta = False
+            for file in files:
+                if file.lower() in ("predios_metadata_completa.cmeta", "predios_metadata_completa.json"):
+                    meta_dest = os.path.join(os.getcwd(), "Temp", f"meta_{tabla_staging}.json")
+                    os.makedirs(os.path.dirname(meta_dest), exist_ok=True)
+                    shutil.copy2(os.path.join(root, file), meta_dest)
+                    found_meta = True
+                    break
+            if found_meta:
+                break
+
         db_url = get_db_connection_url(db)
         if not db_url:
             raise RuntimeError("No se encontró la cadena de conexión a la base de datos (DATABASE_URL_PROD / DATABASE_URL).")
@@ -1150,7 +1234,7 @@ def analizar_shapefile(
                 pass
 
         cmd = [
-            "ogr2ogr",
+            _resolve_ogr2ogr_exe(),
             "-f", "PostgreSQL",
             f"PG:{db_url}",
             shp_file,
@@ -1258,6 +1342,8 @@ def analizar_shapefile(
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
         col_institucion = resolver_columna(mapping.get("institucion"))
         col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
+        col_nom_predio = resolver_columna("NOM_PREDIO") or resolver_columna("NOMBRE_PRE") or resolver_columna("nombre_predio")
+        col_txt_intern = resolver_columna("TXT_INTERN") or resolver_columna("TEXTO_INTE") or resolver_columna("texto_interno")
 
         # Extraer todos los registros de la tabla staging
         q_cols = [f"t.{col_fid} as id", "ROUND((ST_Area(ST_Force2D(ST_SetSRID(t.geom, 32717))) / 10000.0)::numeric, 4) as area_ha"]
@@ -1278,6 +1364,10 @@ def analizar_shapefile(
         else: q_cols.append("NULL as incoming_institucion")
         if col_sector: q_cols.append(f'CAST(t."{col_sector}" AS VARCHAR) as incoming_sector')
         else: q_cols.append("NULL as incoming_sector")
+        if col_nom_predio: q_cols.append(f'CAST(t."{col_nom_predio}" AS VARCHAR) as incoming_nom_predio')
+        else: q_cols.append("NULL as incoming_nom_predio")
+        if col_txt_intern: q_cols.append(f'CAST(t."{col_txt_intern}" AS VARCHAR) as incoming_txt_intern')
+        else: q_cols.append("NULL as incoming_txt_intern")
 
         all_features_q = text(f"SELECT {', '.join(q_cols)} FROM {tabla_completa} t WHERE t.geom IS NOT NULL ORDER BY t.{col_fid} ASC")
         all_features = [dict(r) for r in db.execute(all_features_q).mappings().all()]
@@ -1375,6 +1465,8 @@ def analizar_shapefile(
                     "numero_tramite": f_in.get("incoming_tramite"),
                     "institucion": f_in.get("incoming_institucion"),
                     "sector": f_in.get("incoming_sector"),
+                    "nombre_predio": f_in.get("incoming_nom_predio"),
+                    "texto_interno": f_in.get("incoming_txt_intern"),
                 },
                 "existing": {
                     "id": row["existing_id"],
@@ -1423,6 +1515,8 @@ def analizar_shapefile(
                     "numero_tramite": feat.get("incoming_tramite"),
                     "institucion": feat.get("incoming_institucion"),
                     "sector": feat.get("incoming_sector"),
+                    "nombre_predio": feat.get("incoming_nom_predio"),
+                    "texto_interno": feat.get("incoming_txt_intern"),
                     "es_codigo_repetido": is_rep,
                     "repeticion_index": rep_idx
                 })
@@ -1522,6 +1616,18 @@ def confirmar_importacion_shapefile(
         col_tramite = resolver_columna(mapping.get("numero_tramite"))
         col_institucion = resolver_columna(mapping.get("institucion"))
         col_sector = resolver_columna(mapping.get("sector")) or resolver_columna("sector")
+        col_ref_id = resolver_columna("REF_ID") or resolver_columna("ref_id")
+        col_nom_predio = resolver_columna("NOM_PREDIO") or resolver_columna("NOMBRE_PRE") or resolver_columna("nombre_predio")
+        col_txt_intern = resolver_columna("TXT_INTERN") or resolver_columna("TEXTO_INTE") or resolver_columna("texto_interno")
+
+        meta_dict = {}
+        meta_path = os.path.join(os.getcwd(), "Temp", f"meta_{staging_table.split('.')[-1]}.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as mf:
+                    meta_dict = json.load(mf) or {}
+            except Exception as me:
+                logging.warning(f"No se pudo leer metadata extendida {meta_path}: {me}")
 
         # Consultar filas de staging
         q_cols = [f"{col_fid} as id", "geom", "ST_Area(ST_Force2D(ST_SetSRID(geom, 32717))) / 10000.0 as area_ha"]
@@ -1535,6 +1641,9 @@ def confirmar_importacion_shapefile(
         if col_tramite: q_cols.append(f'"{col_tramite}" as val_tramite')
         if col_institucion: q_cols.append(f'"{col_institucion}" as val_institucion')
         if col_sector: q_cols.append(f'"{col_sector}" as val_sector')
+        if col_ref_id: q_cols.append(f'"{col_ref_id}" as val_ref_id')
+        if col_nom_predio: q_cols.append(f'"{col_nom_predio}" as val_nom_predio')
+        if col_txt_intern: q_cols.append(f'"{col_txt_intern}" as val_txt_intern')
 
         staging_rows = db.execute(text(f"SELECT {', '.join(q_cols)} FROM {staging_table}")).mappings().all()
         staging_dict = {str(r["id"]): r for r in staging_rows}
@@ -1691,6 +1800,14 @@ def confirmar_importacion_shapefile(
                                 activo = true
                         """), {"codigo": final_cod, "pos_id": posesionario_id, "emp_id": clean_emp_id})
 
+                    ref_key = str(fila.get("val_ref_id") or "").strip()
+                    meta_item = meta_dict.get(ref_key) if ref_key else None
+                    val_nom_predio = str((meta_item or {}).get("nombre_predio") or fila.get("val_nom_predio") or "").strip() or None
+                    val_txt_intern = str((meta_item or {}).get("texto_interno") or fila.get("val_txt_intern") or "").strip() or None
+                    txts_intern_list = (meta_item or {}).get("textos_internos") or []
+                    val_txts_json = json.dumps(txts_intern_list, ensure_ascii=False)
+                    linderos_meta_item = (meta_item or {}).get("linderos") or None
+
                     row_id_prov, row_id_cant = resolver_dpa_predio(final_cod, default_prov, default_cant, db)
                     # Actualizar predio existente
                     q_upd = text(f"""
@@ -1717,6 +1834,9 @@ def confirmar_importacion_shapefile(
                             numero_tramite = COALESCE(:tr, numero_tramite),
                             institucion = COALESCE(:inst, institucion),
                             sector = COALESCE(:sec, sector),
+                            nombre_predio = COALESCE(:nom_predio, nombre_predio),
+                            texto_interno = COALESCE(:txt_intern, texto_interno),
+                            textos_internos_json = CASE WHEN :has_txts THEN CAST(:txts_json AS JSONB) ELSE textos_internos_json END,
                             proyecto_id = COALESCE(proyecto_id, :proy_id),
                             id_provincia = COALESCE(id_provincia, :id_prov),
                             id_canton = COALESCE(id_canton, :id_cant),
@@ -1732,6 +1852,10 @@ def confirmar_importacion_shapefile(
                         "tr": val_tr,
                         "inst": val_inst,
                         "sec": val_sec,
+                        "nom_predio": val_nom_predio,
+                        "txt_intern": val_txt_intern,
+                        "has_txts": bool(txts_intern_list),
+                        "txts_json": val_txts_json,
                         "mod_por": user_id,
                         "target_id": target_id,
                         "proy_id": resolved_proyecto_id,
@@ -1739,8 +1863,8 @@ def confirmar_importacion_shapefile(
                         "id_cant": row_id_cant
                     })
 
-                    # Regenerar vértices y linderos ordenados (P01 al norte, horario, rumbos)
-                    top_res = reconstruir_topologia_predio(db, target_id)
+                    # Regenerar vértices y linderos ordenados conservando colindantes precalculados
+                    top_res = reconstruir_topologia_predio(db, target_id, linderos_meta=linderos_meta_item)
                     resultados["vertices_creados"] += top_res["vertices_creados"]
                     resultados["lineas_creadas"] += top_res["lineas_creadas"]
                     resultados["predios_reemplazados"] += 1
@@ -1829,10 +1953,18 @@ def confirmar_importacion_shapefile(
                             activo = true
                     """), {"codigo": val_cod, "pos_id": posesionario_id, "emp_id": clean_emp_id})
 
+                    ref_key = str(fila.get("val_ref_id") or "").strip()
+                    meta_item = meta_dict.get(ref_key) if ref_key else None
+                    val_nom_predio = str((meta_item or {}).get("nombre_predio") or fila.get("val_nom_predio") or "").strip() or None
+                    val_txt_intern = str((meta_item or {}).get("texto_interno") or fila.get("val_txt_intern") or "").strip() or None
+                    txts_intern_list = (meta_item or {}).get("textos_internos") or []
+                    val_txts_json = json.dumps(txts_intern_list, ensure_ascii=False)
+                    linderos_meta_item = (meta_item or {}).get("linderos") or None
+
                     row_id_prov, row_id_cant = resolver_dpa_predio(val_cod, default_prov, default_cant, db)
                     # Predio
                     q_ins = text(f"""
-                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector)
+                        INSERT INTO catastro.predio (cod_catastral, posesionario_id, empresa_id, geom, area_ha, creado_por, fecha_creacion, fecha_adjudicacion, numero_tramite, institucion, proyecto_id, id_provincia, id_canton, sector, nombre_predio, texto_interno, textos_internos_json)
                         SELECT 
                             :codigo, :pos_id, :emp_id,
                             CASE 
@@ -1842,7 +1974,8 @@ def confirmar_importacion_shapefile(
                             END,
                             ST_Area(cg) / 10000.0,
                             :creado_por, :fecha_creacion, :fa, :tr, :inst,
-                            :proy_id, :id_prov, :id_cant, :sec
+                            :proy_id, :id_prov, :id_cant, :sec,
+                            :nom_predio, :txt_intern, CAST(:txts_json AS JSONB)
                         FROM (
                             SELECT ST_CollectionExtract(ST_MakeValid(ST_Force2D(ST_SetSRID(geom, 32717))), 3) as cg
                             FROM {staging_table} WHERE {col_fid} = :id_row
@@ -1862,7 +1995,10 @@ def confirmar_importacion_shapefile(
                         "sec": val_sec,
                         "proy_id": resolved_proyecto_id,
                         "id_prov": row_id_prov,
-                        "id_cant": row_id_cant
+                        "id_cant": row_id_cant,
+                        "nom_predio": val_nom_predio,
+                        "txt_intern": val_txt_intern,
+                        "txts_json": val_txts_json
                     }).mappings().first()
 
                     if new_predio:
@@ -1870,24 +2006,25 @@ def confirmar_importacion_shapefile(
                         imported_pids.append(new_id)
                         resultados["predios_creados"] += 1
 
-                        # Topología ordenada (P01 al norte, horario, rumbos)
-                        top_res = reconstruir_topologia_predio(db, new_id)
+                        # Topología ordenada conservando colindantes precalculados
+                        top_res = reconstruir_topologia_predio(db, new_id, linderos_meta=linderos_meta_item)
                         resultados["vertices_creados"] += top_res["vertices_creados"]
                         resultados["lineas_creadas"] += top_res["lineas_creadas"]
             except Exception as row_err:
                 logging.error(f"Error importando fila {sid_str} con código {val_cod}: {row_err}")
                 continue
 
-        # Segunda pasada: asegurar detección mutua de colindantes entre todos los predios del lote
+        # Segunda pasada: completar solo colindantes vacíos sin sobrescribir los ya asignados
         if len(imported_pids) > 1:
-            for pid in imported_pids:
-                try:
-                    reconstruir_topologia_predio(db, pid)
-                except Exception:
-                    pass
+            _completar_colindantes_vacios(db, imported_pids)
 
-        # Limpiar tabla staging
+        # Limpiar tabla staging y metadata temporal
         db.execute(text(f"DROP TABLE IF EXISTS {staging_table} CASCADE"))
+        if meta_path and os.path.exists(meta_path):
+            try:
+                os.remove(meta_path)
+            except Exception:
+                pass
         db.commit()
         if task_id:
             PROGRESS_STORE[task_id] = {

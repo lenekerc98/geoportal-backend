@@ -29,6 +29,9 @@ class CodigoCatastral(CodigoCatastralBase):
     proyecto_id: Optional[int] = None
     sector: Optional[str] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
 
     class Config:
         from_attributes = True
@@ -70,6 +73,9 @@ class PredioBase(BaseModel):
     institucion: Optional[str] = None
     sector: Optional[str] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
 
 class PredioCreate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -85,6 +91,9 @@ class PredioCreate(BaseModel):
     institucion: Optional[str] = None
     sector: Optional[str] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
 
 class PredioUpdate(BaseModel):
     posesionario_id: Optional[int] = None
@@ -101,6 +110,9 @@ class PredioUpdate(BaseModel):
     institucion: Optional[str] = None
     sector: Optional[str] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
 
 class PredioAnguloUpdate(BaseModel):
     angulo_texto: float
@@ -120,6 +132,9 @@ class Predio(PredioBase):
     id_canton: Optional[int] = None
     id_ciudad: Optional[int] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
     angulo_texto: Optional[float] = 0.0
     codigo_carta: Optional[str] = None
     nombre_carta: Optional[str] = None
@@ -194,6 +209,9 @@ class PredioCartaUpdate(BaseModel):
     cuadricula_carta: Optional[str] = None
     sector: Optional[str] = None
     parroquia: Optional[str] = None
+    nombre_predio: Optional[str] = None
+    texto_interno: Optional[str] = None
+    textos_internos_json: Optional[Any] = None
 
 class CartaTopograficaBase(BaseModel):
     codigo: str

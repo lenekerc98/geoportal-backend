@@ -230,6 +230,9 @@ def init_db_schema(engine):
                     connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES catastro.empresa(id) ON DELETE SET NULL"))
                     connection.execute(text("ALTER TABLE catastro.ortofotos_catalogo ADD COLUMN IF NOT EXISTS proyecto_id INT REFERENCES catastro.proyecto(id) ON DELETE SET NULL"))
                     connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS codigo_anterior VARCHAR(100)"))
+                    connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS nombre_predio VARCHAR(255)"))
+                    connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS texto_interno TEXT"))
+                    connection.execute(text("ALTER TABLE catastro.predio ADD COLUMN IF NOT EXISTS textos_internos_json JSONB DEFAULT '[]'::jsonb"))
                 except Exception:
                     pass
 
@@ -255,7 +258,10 @@ def init_db_schema(engine):
                         p.codigo_carta,
                         p.nombre_carta,
                         p.cuadricula_carta,
-                        p.codigo_anterior
+                        p.codigo_anterior,
+                        p.nombre_predio,
+                        p.texto_interno,
+                        p.textos_internos_json
                     FROM catastro.predio p
                     LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
                 """))

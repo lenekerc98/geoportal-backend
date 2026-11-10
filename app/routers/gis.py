@@ -117,7 +117,10 @@ async def get_predios_geojson(
                         'parroquia', parroquia,
                         'codigo_carta', codigo_carta,
                         'nombre_carta', nombre_carta,
-                        'cuadricula_carta', cuadricula_carta
+                        'cuadricula_carta', cuadricula_carta,
+                        'nombre_predio', nombre_predio,
+                        'texto_interno', texto_interno,
+                        'textos_internos_json', textos_internos_json
                     )
                 )
             ), '[]'::json)
@@ -638,11 +641,12 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         creador_nom = f"{creador_nom} (Brigadista)"
 
     query = text(f"""
-        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por, operador_temporal_id, tipo_creador, creador_nombre, sector, parroquia)
-        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por, :op_id, :tipo_creador, :creador_nom, :sector, :parroquia)
+        INSERT INTO catastro.predio (posesionario_id, cod_catastral, geom, area_ha, empresa_id, proyecto_id, id_provincia, id_canton, id_ciudad, creado_por, operador_temporal_id, tipo_creador, creador_nombre, sector, parroquia, nombre_predio, texto_interno, textos_internos_json)
+        VALUES (:posesionario_id, :cod_catastral, {geom_sql}, ST_Area({geom_sql}) / 10000.0, :empresa_id, :proyecto_id, :id_provincia, :id_canton, :id_ciudad, :creado_por, :op_id, :tipo_creador, :creador_nom, :sector, :parroquia, :nombre_predio, :texto_interno, CAST(:textos_internos_json AS JSONB))
         RETURNING id;
     """)
     try:
+        txts_json_str = json.dumps(predio.textos_internos_json, ensure_ascii=False) if getattr(predio, 'textos_internos_json', None) is not None else "[]"
         result = db.execute(query, {
             "posesionario_id": predio.posesionario_id,
             "cod_catastral": predio.cod_catastral,
@@ -657,7 +661,10 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             "tipo_creador": tipo_creador,
             "creador_nom": creador_nom,
             "sector": predio.sector.strip().upper() if predio.sector else None,
-            "parroquia": parroquia_final
+            "parroquia": parroquia_final,
+            "nombre_predio": predio.nombre_predio.strip() if getattr(predio, 'nombre_predio', None) else None,
+            "texto_interno": getattr(predio, 'texto_interno', None),
+            "textos_internos_json": txts_json_str
         })
         new_id = result.scalar()
         
@@ -773,6 +780,18 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
     if "parroquia" in fields_set or predio.parroquia is not None:
         updates.append("parroquia = :parroquia")
         params["parroquia"] = predio.parroquia.strip().upper() if (predio.parroquia and predio.parroquia.strip()) else None
+
+    if "nombre_predio" in fields_set or getattr(predio, 'nombre_predio', None) is not None:
+        updates.append("nombre_predio = :nombre_predio")
+        params["nombre_predio"] = predio.nombre_predio.strip() if (predio.nombre_predio and predio.nombre_predio.strip()) else None
+
+    if "texto_interno" in fields_set or getattr(predio, 'texto_interno', None) is not None:
+        updates.append("texto_interno = :texto_interno")
+        params["texto_interno"] = predio.texto_interno
+
+    if "textos_internos_json" in fields_set or getattr(predio, 'textos_internos_json', None) is not None:
+        updates.append("textos_internos_json = CAST(:textos_internos_json AS JSONB)")
+        params["textos_internos_json"] = json.dumps(predio.textos_internos_json or [], ensure_ascii=False)
         
     if predio.geom_geojson is not None:
         params["geojson"] = json.dumps(predio.geom_geojson)
@@ -1039,7 +1058,7 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     """
     # 1. Obtener datos del predio y su geometría en formato WKT (Transformado a WGS84 para Leaflet)
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, p.parroquia, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.estado, p.fecha_creacion, p.fecha_baja, p.predio_padre_id, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, p.parroquia, p.nombre_predio, p.texto_interno, p.textos_internos_json, ST_AsText(ST_Transform(p.geom, 4326)) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.cod_catastral = :cod_catastral
@@ -1118,6 +1137,9 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         cuadricula_carta=final_cuad_carta,
         sector=predio_row["sector"],
         parroquia=predio_row["parroquia"],
+        nombre_predio=predio_row.get("nombre_predio"),
+        texto_interno=predio_row.get("texto_interno"),
+        textos_internos_json=predio_row.get("textos_internos_json"),
         geom_wkt=predio_row["geom_wkt"]
     )
     
@@ -1159,7 +1181,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """
     # 1. Obtener datos del predio y su geometría en formato WKT
     q_predio = text("""
-        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, p.parroquia, ST_AsText(p.geom) as geom_wkt
+        SELECT p.id, p.cod_catastral, p.area_ha, p.posesionario_id, po.nombre as nombre_posesionario, po.cedula, p.angulo_texto, p.codigo_carta, p.nombre_carta, p.cuadricula_carta, p.sector, p.parroquia, p.nombre_predio, p.texto_interno, p.textos_internos_json, ST_AsText(p.geom) as geom_wkt
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.id = :predio_id
@@ -1236,6 +1258,9 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
         cuadricula_carta=final_cuad_carta,
         sector=predio_row["sector"],
         parroquia=predio_row["parroquia"],
+        nombre_predio=predio_row.get("nombre_predio"),
+        texto_interno=predio_row.get("texto_interno"),
+        textos_internos_json=predio_row.get("textos_internos_json"),
         geom_wkt=predio_row["geom_wkt"]
     )
     
