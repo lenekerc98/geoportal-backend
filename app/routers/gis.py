@@ -1083,14 +1083,14 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
     
     # 3. Obtener las líneas de lindero (lados/tramos)
     q_linderos = text("""
-        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
+        SELECT id, predio_id, cod_catastral, longitud, rumbo, colindante, tramo, ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
         FROM catastro.linea_lindero 
         WHERE predio_id = :predio_id
         ORDER BY id
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
     has_any_colindante = any(l["colindante"] and str(l["colindante"]).strip() for l in linderos_rows)
-    if (not linderos_rows or not has_any_colindante) and predio_row["geom"]:
+    if (not linderos_rows or not has_any_colindante) and predio_row.get("geom_wkt"):
         try:
             reconstruir_topologia_predio(db, predio_id)
             db.commit()
@@ -1211,7 +1211,7 @@ async def get_predio_detalle_por_id(predio_id: int, db: Session = Depends(get_db
     """)
     linderos_rows = db.execute(q_linderos, {"predio_id": predio_id}).mappings().all()
     has_any_colindante = any(l["colindante"] and str(l["colindante"]).strip() for l in linderos_rows)
-    if (not linderos_rows or not has_any_colindante) and predio_row["geom"]:
+    if (not linderos_rows or not has_any_colindante) and predio_row.get("geom_wkt"):
         try:
             reconstruir_topologia_predio(db, predio_id)
             db.commit()

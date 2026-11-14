@@ -2,7 +2,6 @@ import os
 import math
 import logging
 import json
-import pyodbc
 from typing import Dict, Any, Optional, Tuple, List
 from sqlalchemy import text
 from app.core.database import engine
@@ -63,7 +62,16 @@ def utm17s_to_wgs84(easting: float, northing: float) -> Tuple[float, float]:
 def get_sqlserver_connection():
     """
     Obtiene una conexión de SOLO LECTURA a la base SQL Server municipal.
+    Importa pyodbc de forma diferida para no romper endpoints solo-PostgreSQL en Render/Docker.
     """
+    try:
+        import pyodbc
+    except ImportError as exc:
+        logger.error("[SQLServer] El módulo 'pyodbc' no está instalado en este entorno.")
+        raise RuntimeError(
+            "La sincronización directa con SQL Server requiere 'pyodbc' y el driver ODBC."
+        ) from exc
+
     host = os.getenv("SQLSERVER_HOST", "192.168.18.22")
     port = os.getenv("SQLSERVER_PORT", "1433")
     database = os.getenv("SQLSERVER_DB", "muvp_urdaneta")
