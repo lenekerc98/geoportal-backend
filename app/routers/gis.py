@@ -485,7 +485,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
             LIMIT 1;
         """)
         try:
-            chk = db.execute(sql_in_canton, {"geom_json": geom_json_str}).fetchone()
+            with db.begin_nested():
+                chk = db.execute(sql_in_canton, {"geom_json": geom_json_str}).fetchone()
             if chk and not chk[0]:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -494,7 +495,6 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         except HTTPException:
             raise
         except Exception as e_chk:
-            db.rollback()
             logging.warning(f"Validación territorial omitida por esquema/BD: {e_chk}")
     
     # Lógica de reordenamiento de polígono (P01 Nor-Oeste y sentido horario)
@@ -616,15 +616,16 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
     # Fase 2: Detección espacial automática si aún falta id_ciudad o parroquia
     if not id_ciud or not parroquia_final:
         try:
-            auto_ciud = db.execute(text(f"""
-                SELECT c.id, UPPER(c.nombre), RIGHT(c.codigo_dpa, 2)
-                FROM catastro.ciudades c
-                WHERE c.codigo_dpa LIKE '1206%'
-                ORDER BY 
-                    CASE WHEN ST_Intersects({geom_sql}, c.geom) THEN 0 ELSE 1 END,
-                    ST_Distance({geom_sql}, c.geom) ASC
-                LIMIT 1;
-            """), {"geojson": geojson_str}).fetchone()
+            with db.begin_nested():
+                auto_ciud = db.execute(text(f"""
+                    SELECT c.id, UPPER(c.nombre), RIGHT(c.codigo_dpa, 2)
+                    FROM catastro.ciudades c
+                    WHERE c.codigo_dpa LIKE '1206%'
+                    ORDER BY 
+                        CASE WHEN ST_Intersects({geom_sql}, c.geom) THEN 0 ELSE 1 END,
+                        ST_Distance({geom_sql}, c.geom) ASC
+                    LIMIT 1;
+                """), {"geojson": geojson_str}).fetchone()
             if auto_ciud:
                 id_ciud = auto_ciud[0]
                 if not parroquia_final:

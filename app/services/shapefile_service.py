@@ -191,7 +191,7 @@ def reconstruir_topologia_predio(
     - Cálculo de rumbo topográfico y tramo para cada lindero.
     """
     predio_row = db.execute(
-        text("SELECT id, cod_catastral, empresa_id, ST_AsText(geom) as geom_wkt FROM catastro.predio WHERE id = :pid"),
+        text("SELECT id, cod_catastral, empresa_id, fecha_creacion, fecha_baja, ST_AsText(geom) as geom_wkt FROM catastro.predio WHERE id = :pid"),
         {"pid": predio_id}
     ).mappings().first()
 
@@ -200,6 +200,8 @@ def reconstruir_topologia_predio(
 
     cod_catastral = predio_row["cod_catastral"]
     empresa_id = predio_row["empresa_id"]
+    predio_fecha_creacion = predio_row["fecha_creacion"]
+    predio_fecha_baja = predio_row["fecha_baja"]
     geom_wkt = predio_row["geom_wkt"]
 
     vertices_list, linderos_list = procesar_topologia_predio(geom_wkt)
@@ -210,10 +212,10 @@ def reconstruir_topologia_predio(
     db.execute(text("DELETE FROM catastro.vertice WHERE predio_id = :pid"), {"pid": predio_id})
     db.execute(text("DELETE FROM catastro.linea_lindero WHERE predio_id = :pid"), {"pid": predio_id})
 
-    # Insertar Vértices en lote
+    # Insertar Vértices en lote preservando vigencia temporal 4D del predio
     q_vert = text("""
-        INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id)
-        VALUES (:pid, :cod, :codigo, :x, :y, ST_SetSRID(ST_MakePoint(:x, :y), 32717), :emp_id)
+        INSERT INTO catastro.vertice (predio_id, cod_catastral, codigo, coord_x, coord_y, geom, empresa_id, fecha_creacion, fecha_baja)
+        VALUES (:pid, :cod, :codigo, :x, :y, ST_SetSRID(ST_MakePoint(:x, :y), 32717), :emp_id, COALESCE(:fecha_creacion, CURRENT_DATE), :fecha_baja)
     """)
     v_params = [
         {
@@ -222,17 +224,19 @@ def reconstruir_topologia_predio(
             "codigo": v["codigo"],
             "x": v["coord_x"],
             "y": v["coord_y"],
-            "emp_id": empresa_id
+            "emp_id": empresa_id,
+            "fecha_creacion": predio_fecha_creacion,
+            "fecha_baja": predio_fecha_baja
         }
         for v in vertices_list
     ]
     if v_params:
         db.execute(q_vert, v_params)
 
-    # Insertar Linderos en lote
+    # Insertar Linderos en lote preservando vigencia temporal 4D del predio
     q_lin = text("""
-        INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, rumbo, tramo, colindante, geom, empresa_id)
-        VALUES (:pid, :cod, :longitud, :rumbo, :tramo, :colindante, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), :emp_id)
+        INSERT INTO catastro.linea_lindero (predio_id, cod_catastral, longitud, rumbo, tramo, colindante, geom, empresa_id, fecha_creacion, fecha_baja)
+        VALUES (:pid, :cod, :longitud, :rumbo, :tramo, :colindante, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), :emp_id, COALESCE(:fecha_creacion, CURRENT_DATE), :fecha_baja)
     """)
     l_params = []
     meta_by_tramo = {}
@@ -293,7 +297,9 @@ def reconstruir_topologia_predio(
             "y1": l["y1"],
             "x2": l["x2"],
             "y2": l["y2"],
-            "emp_id": empresa_id
+            "emp_id": empresa_id,
+            "fecha_creacion": predio_fecha_creacion,
+            "fecha_baja": predio_fecha_baja
         })
     if l_params:
         db.execute(q_lin, l_params)
