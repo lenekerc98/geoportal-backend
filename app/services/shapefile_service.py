@@ -272,7 +272,7 @@ def reconstruir_topologia_predio(
                     FROM catastro.predio p
                     LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
                     WHERE p.id != :pid
-                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_TIMESTAMP)
                       AND ST_DWithin(p.geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 1.2)
                     ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_SetSRID(ST_MakeLine(ST_MakePoint(:x1, :y1), ST_MakePoint(:x2, :y2)), 32717), 0.5), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
                     LIMIT 1
@@ -333,7 +333,7 @@ def _completar_colindantes_vacios(db: Session, predio_ids: List[int]):
                     FROM catastro.predio p
                     LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
                     WHERE p.id != :pid
-                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+                      AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_TIMESTAMP)
                       AND ST_DWithin(p.geom, ST_GeomFromText(:gwkt, 32717), 1.2)
                     ORDER BY ST_Length(ST_Intersection(ST_Buffer(ST_GeomFromText(:gwkt, 32717), 0.5), ST_CollectionExtract(ST_MakeValid(p.geom), 3))) DESC
                     LIMIT 1
@@ -1809,6 +1809,14 @@ def confirmar_importacion_shapefile(
                     linderos_meta_item = (meta_item or {}).get("linderos") or None
 
                     row_id_prov, row_id_cant = resolver_dpa_predio(final_cod, default_prov, default_cant, db)
+                    # Preservar geometría previa en catastro.predio_historial (4D) antes de reemplazar
+                    db.execute(text("""
+                        INSERT INTO catastro.predio_historial (predio_id, area_ha, geom, modificado_por, observacion)
+                        SELECT id, area_ha, geom, :uid, 'Geometría previa a reemplazo masivo por shapefile'
+                        FROM catastro.predio
+                        WHERE id = :target_id AND geom IS NOT NULL
+                    """), {"uid": user_id, "target_id": target_id})
+
                     # Actualizar predio existente
                     q_upd = text(f"""
                         UPDATE catastro.predio

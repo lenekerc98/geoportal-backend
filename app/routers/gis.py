@@ -134,7 +134,7 @@ async def get_predios_geojson(
     """.format(
         "AND fecha_creacion >= :fecha_inicio" if fecha_inicio else "",
         "AND fecha_creacion <= :fecha_fin" if fecha_fin else "",
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -277,6 +277,8 @@ async def check_predio_conflict(req: ConflictCheckRequest, db: Session = Depends
             FROM catastro.predio p
             LEFT JOIN catastro.posesionario pos ON p.posesionario_id = pos.id
             WHERE p.cod_catastral = :cod
+              AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_TIMESTAMP)
+            ORDER BY p.id DESC
             LIMIT 1
         """), {"cod": cod}).fetchone()
 
@@ -492,7 +494,8 @@ async def create_predio(predio: schemas.PredioCreate, db: Session = Depends(get_
         except HTTPException:
             raise
         except Exception as e_chk:
-            pass
+            db.rollback()
+            logging.warning(f"Validación territorial omitida por esquema/BD: {e_chk}")
     
     # Lógica de reordenamiento de polígono (P01 Nor-Oeste y sentido horario)
     if predio.geom_geojson and predio.geom_geojson.get("type") == "Polygon":
@@ -817,7 +820,14 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
         
     if not updates:
         return {"message": "No hay campos para actualizar"}
-        
+
+    user_nom = getattr(current_user, 'username', None) or (current_user.get('username') if isinstance(current_user, dict) else 'Usuario')
+    user_uid = getattr(current_user, 'id_usuario', None) or getattr(current_user, 'id', None) or (current_user.get('id_usuario') if isinstance(current_user, dict) else None)
+
+    updates.append("modificado_por = :mod_por")
+    updates.append("fecha_modificacion = NOW()")
+    params["mod_por"] = user_uid
+
     query = text(f"""
         UPDATE catastro.predio
         SET {', '.join(updates)}
@@ -825,6 +835,14 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
     """)
     
     try:
+        if predio.geom_geojson is not None:
+            db.execute(text("""
+                INSERT INTO catastro.predio_historial (predio_id, area_ha, geom, modificado_por, observacion)
+                SELECT id, area_ha, geom, :uid, 'Geometría previa a actualización manual'
+                FROM catastro.predio
+                WHERE id = :id AND geom IS NOT NULL
+            """), {"uid": user_uid, "id": id})
+
         result = db.execute(query, params)
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Predio no encontrado")
@@ -839,8 +857,6 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
             if r and r[0]:
                 cod_desc = r[0]
         desc_predio = f"con código catastral {cod_desc}" if cod_desc else f"{id}"
-        user_nom = getattr(current_user, 'username', None) or (current_user.get('username') if isinstance(current_user, dict) else 'Usuario')
-        user_uid = getattr(current_user, 'id_usuario', None) or (current_user.get('id_usuario') if isinstance(current_user, dict) else None)
         log_audit(db, "INFO", "PREDIO_UPDATED", f"Predio {desc_predio} actualizado por {user_nom}", user_uid)
         return {"message": "Predio actualizado exitosamente"}
     except Exception as e:
@@ -850,29 +866,66 @@ async def update_predio(id: int, predio: schemas.PredioUpdate, db: Session = Dep
 @router.delete("/predios/{id}")
 async def delete_predio(id: int, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
     """
-    Eliminar un predio verificando aislamiento por empresa (Anti-BOLA).
+    Da de baja lógica un predio (Catastro 4D) preservando su historial y aislando por empresa (Anti-BOLA).
     """
-    row = db.execute(text("SELECT cod_catastral, empresa_id FROM catastro.predio WHERE id = :id"), {"id": id}).fetchone()
+    row = db.execute(text("""
+        SELECT cod_catastral, empresa_id
+        FROM catastro.predio
+        WHERE id = :id
+          AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP)
+    """), {"id": id}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Predio no encontrado")
 
-    role_name = current_user.rol.nombre.lower() if current_user.rol else ""
+    role_name = current_user.rol.nombre.lower() if (hasattr(current_user, 'rol') and current_user.rol) else ""
     if role_name not in ["superadmin", "superadministrador"]:
-        if current_user.id_empresa is None or row.empresa_id != current_user.id_empresa:
+        user_emp = getattr(current_user, 'id_empresa', None)
+        if user_emp is None or row.empresa_id != user_emp:
             raise HTTPException(status_code=403, detail="No tienes permisos para eliminar predios de otra empresa.")
 
     cod_desc = row[0] if (row and row[0]) else id
     desc_predio = f"con código catastral {cod_desc}" if (row and row[0]) else f"{id}"
-    query = text("DELETE FROM catastro.predio WHERE id = :id")
+    user_uid = getattr(current_user, 'id_usuario', None) or getattr(current_user, 'id', None) or (current_user.get('id_usuario') if isinstance(current_user, dict) else None)
+    user_nom = getattr(current_user, 'username', None) or (current_user.get('username') if isinstance(current_user, dict) else 'Usuario')
     try:
-        result = db.execute(query, {"id": id})
+        db.execute(text("""
+            INSERT INTO catastro.predio_historial (predio_id, area_ha, geom, modificado_por, observacion)
+            SELECT id, area_ha, geom, :uid, 'Baja lógica (eliminación) de predio'
+            FROM catastro.predio
+            WHERE id = :id AND geom IS NOT NULL
+        """), {"uid": user_uid, "id": id})
+
+        result = db.execute(text("""
+            UPDATE catastro.predio
+            SET fecha_baja = CURRENT_DATE,
+                estado = 'Inactivo',
+                modificado_por = :uid,
+                fecha_modificacion = NOW()
+            WHERE id = :id
+              AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP)
+        """), {"id": id, "uid": user_uid})
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Predio no encontrado")
-        if row and row[0]:
-            db.execute(text("DELETE FROM catastro.codigo_catastral WHERE codigo = :codigo"), {"codigo": row[0]})
+
+        db.execute(text("""
+            UPDATE catastro.vertice
+            SET fecha_baja = CURRENT_DATE, estado = 'Inactivo'
+            WHERE predio_id = :id
+              AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP)
+        """), {"id": id})
+        db.execute(text("""
+            UPDATE catastro.linea_lindero
+            SET fecha_baja = CURRENT_DATE, estado = 'Inactivo'
+            WHERE predio_id = :id
+              AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP)
+        """), {"id": id})
+
         db.commit()
-        log_audit(db, "WARNING", "PREDIO_DELETED", f"Predio {desc_predio} eliminado por {current_user.username}", current_user.id_usuario)
-        return {"message": "Predio eliminado exitosamente"}
+        log_audit(db, "WARNING", "PREDIO_DELETED", f"Predio {desc_predio} dado de baja lógica por {user_nom}", user_uid)
+        return {"message": "Predio dado de baja exitosamente"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error al eliminar predio: {str(e)}")
@@ -913,7 +966,7 @@ async def get_vertices_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -969,7 +1022,7 @@ async def get_lineas_geojson(
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR empresa_id = :empresa_id)
         {0};
     """.format(
-        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_DATE) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
+        "AND fecha_creacion <= :fecha_historica AND (fecha_baja IS NULL OR fecha_baja > :fecha_historica)" if fecha_historica else "AND (fecha_baja IS NULL OR fecha_baja > CURRENT_TIMESTAMP) AND (fecha_creacion IS NULL OR fecha_creacion <= CURRENT_DATE)"
     ))
     try:
         role_name = current_user.rol.nombre if (hasattr(current_user, 'rol') and current_user.rol) else getattr(current_user, 'role', '')
@@ -1062,6 +1115,8 @@ async def get_predio_detalle_completo(cod_catastral: str, db: Session = Depends(
         FROM catastro.predio p
         LEFT JOIN catastro.posesionario po ON p.posesionario_id = po.id
         WHERE p.cod_catastral = :cod_catastral
+        ORDER BY (CASE WHEN p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_TIMESTAMP THEN 0 ELSE 1 END), p.id DESC
+        LIMIT 1
     """)
     predio_row = db.execute(q_predio, {"cod_catastral": cod_catastral}).mappings().first()
     if not predio_row:
@@ -1338,7 +1393,8 @@ async def get_codigos_catastrales(
         target_empresa_id = current_user.id_empresa
 
     query = text("""
-        SELECT DISTINCT cc.codigo, cc.activo, cc.fecha_creacion, 
+        SELECT DISTINCT cc.codigo, cc.activo,
+               COALESCE(p.fecha_creacion::timestamp, cc.fecha_creacion) AS fecha_creacion,
                COALESCE(p.posesionario_id, cc.posesionario_id) AS posesionario_id,
                pos.cedula AS cedula_posesionario, pos.nombre AS nombre_posesionario,
                e.nombre AS empresa_nombre,
@@ -1349,7 +1405,7 @@ async def get_codigos_catastrales(
                p.sector,
                p.parroquia
         FROM catastro.codigo_catastral cc
-        LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_DATE)
+        LEFT JOIN catastro.predio p ON cc.codigo = p.cod_catastral AND (p.fecha_baja IS NULL OR p.fecha_baja > CURRENT_TIMESTAMP)
         LEFT JOIN catastro.posesionario pos ON COALESCE(p.posesionario_id, cc.posesionario_id) = pos.id
         LEFT JOIN catastro.empresa e ON COALESCE(cc.empresa_id, p.empresa_id) = e.id
         WHERE (CAST(:empresa_id AS INTEGER) IS NULL OR cc.empresa_id = :empresa_id OR p.empresa_id = :empresa_id)
@@ -1357,10 +1413,10 @@ async def get_codigos_catastrales(
         {0}
         {1}
         {2}
-        ORDER BY cc.fecha_creacion DESC
+        ORDER BY COALESCE(p.fecha_creacion::timestamp, cc.fecha_creacion) DESC, p.id DESC NULLS LAST
     """.format(
-        "AND DATE(cc.fecha_creacion) >= DATE(:fecha_inicio)" if fecha_inicio else "",
-        "AND DATE(cc.fecha_creacion) <= DATE(:fecha_fin)" if fecha_fin else "",
+        "AND COALESCE(p.fecha_creacion, DATE(cc.fecha_creacion)) >= DATE(:fecha_inicio)" if fecha_inicio else "",
+        "AND COALESCE(p.fecha_creacion, DATE(cc.fecha_creacion)) <= DATE(:fecha_fin)" if fecha_fin else "",
         "AND p.id IS NOT NULL" if solo_con_predio else ""
     ))
     try:
@@ -1373,7 +1429,11 @@ async def get_codigos_catastrales(
                 codigo=r["codigo"],
                 activo=r["activo"],
                 posesionario_id=r["posesionario_id"],
-                fecha_creacion=r["fecha_creacion"].replace(tzinfo=timezone.utc) if r["fecha_creacion"] else None,
+                fecha_creacion=(
+                    r["fecha_creacion"].replace(tzinfo=timezone.utc)
+                    if r["fecha_creacion"] and hasattr(r["fecha_creacion"], "tzinfo")
+                    else r["fecha_creacion"]
+                ),
                 cedula_posesionario=r["cedula_posesionario"],
                 nombre_posesionario=r["nombre_posesionario"],
                 empresa_nombre=r["empresa_nombre"],
@@ -2983,6 +3043,39 @@ async def fraccionar_predio(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error en fraccionamiento atómico: {str(e)}")
+
+@router.get("/predios/{predio_id}/historial")
+async def get_predio_historial(
+    predio_id: int,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Obtiene el historial de versiones geométricas (catastro.predio_historial) de un predio.
+    """
+    rows = db.execute(text("""
+        SELECT h.id, h.predio_id, h.area_ha, h.modificado_por, h.observacion, h.fecha_registro,
+               u.username AS usuario_nombre,
+               ST_AsGeoJSON(ST_Transform(h.geom, 4326))::json AS geometry
+        FROM catastro.predio_historial h
+        LEFT JOIN seguridad.usuarios u ON h.modificado_por = u.id_usuario
+        WHERE h.predio_id = :pid
+        ORDER BY h.fecha_registro DESC, h.id DESC
+    """), {"pid": predio_id}).mappings().all()
+    return [
+        {
+            "id": r["id"],
+            "predio_id": r["predio_id"],
+            "area_ha": float(r["area_ha"]) if r["area_ha"] is not None else None,
+            "modificado_por": r["modificado_por"],
+            "usuario_nombre": r["usuario_nombre"],
+            "observacion": r["observacion"],
+            "fecha_registro": r["fecha_registro"].isoformat() if r["fecha_registro"] else None,
+            "geometry": r["geometry"],
+        }
+        for r in rows
+    ]
+
 
 @router.put("/posesionarios/{id}")
 async def update_posesionario(id: int, pos: schemas.PosesionarioBase, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
