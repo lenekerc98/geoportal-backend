@@ -1324,6 +1324,7 @@ async def get_codigos_catastrales(
     fecha_fin: Optional[str] = None,
     empresa_id: Optional[int] = None,
     proyecto_id: Optional[int] = None,
+    solo_con_predio: bool = True,
     db: Session = Depends(get_db), 
     current_user: Usuario = Depends(get_current_user)
 ):
@@ -1355,10 +1356,12 @@ async def get_codigos_catastrales(
           AND (CAST(:proyecto_id AS INTEGER) IS NULL OR p.proyecto_id = :proyecto_id OR p.proyecto_id IS NULL)
         {0}
         {1}
+        {2}
         ORDER BY cc.fecha_creacion DESC
     """.format(
         "AND DATE(cc.fecha_creacion) >= DATE(:fecha_inicio)" if fecha_inicio else "",
-        "AND DATE(cc.fecha_creacion) <= DATE(:fecha_fin)" if fecha_fin else ""
+        "AND DATE(cc.fecha_creacion) <= DATE(:fecha_fin)" if fecha_fin else "",
+        "AND p.id IS NOT NULL" if solo_con_predio else ""
     ))
     try:
         params = {"empresa_id": target_empresa_id, "proyecto_id": proyecto_id}
